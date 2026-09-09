@@ -641,6 +641,21 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
     const targets = [oppSoldier.head, oppSoldier.torso, ...obstacles.map(o => o.mesh)];
     const intersects = raycaster.intersectObjects(targets, true);
+    const hitPoint = intersects[0]?.point ?? raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(120));
+    const tracerGeometry = new THREE.BufferGeometry().setFromPoints([raycaster.ray.origin.clone(), hitPoint]);
+    const tracerMaterial = new THREE.LineBasicMaterial({ color: curWeapon.weaponType === 'awm' ? '#fbbf24' : '#67e8f9', transparent: true, opacity: 0.9 });
+    const tracer = new THREE.Line(tracerGeometry, tracerMaterial);
+    scene.add(tracer);
+    window.setTimeout(() => {
+      scene.remove(tracer);
+      tracerGeometry.dispose();
+      tracerMaterial.dispose();
+    }, curWeapon.weaponType === 'awm' ? 180 : 90);
+
+    const muzzle = new THREE.PointLight(curWeapon.weaponType === 'awm' ? '#fbbf24' : '#22d3ee', 6, 4);
+    muzzle.position.copy(raycaster.ray.origin);
+    scene.add(muzzle);
+    window.setTimeout(() => scene.remove(muzzle), 70);
 
     if (intersects.length > 0) {
       const hit = intersects[0];
