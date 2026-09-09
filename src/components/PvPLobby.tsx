@@ -3,15 +3,19 @@ import { Swords, Users, Bot, Share2, ArrowRight, Shield, Trophy, Sparkles, Flame
 import { UserProfile } from '../types';
 import { sound } from '../audio/soundEngine';
 
+import { MapId } from '../game3d/types3d';
+import { MAP_CATALOG } from '../game3d/mapRegistry';
+
 interface PvPLobbyProps {
   user: UserProfile;
-  onStartMatch: (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number) => void;
+  onStartMatch: (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number, mapId?: MapId) => void;
   onOpenLoadout: () => void;
 }
 
 export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLoadout }) => {
   const [joinCode, setJoinCode] = useState('');
   const [stakeStars, setStakeStars] = useState<number>(0);
+  const [selectedMap, setSelectedMap] = useState<MapId>('warehouse');
   const [activeTab, setActiveTab] = useState<'modes' | 'join'>('modes');
 
   const generateRoomCode = () => {
@@ -26,24 +30,24 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
   const handleCreateRoom = () => {
     sound.playClick();
     const code = generateRoomCode();
-    onStartMatch(code, 'host', stakeStars);
+    onStartMatch(code, 'host', stakeStars, selectedMap);
   };
 
   const handleQuickMatch = () => {
     sound.playClick();
     const quickRoom = `QUICK-${Math.floor(Math.random() * 10)}`;
-    onStartMatch(quickRoom, 'host', stakeStars);
+    onStartMatch(quickRoom, 'host', stakeStars, selectedMap);
   };
 
   const handleJoinByCode = () => {
     if (!joinCode.trim()) return;
     sound.playClick();
-    onStartMatch(joinCode.toUpperCase().trim(), 'join', stakeStars);
+    onStartMatch(joinCode.toUpperCase().trim(), 'join', stakeStars, selectedMap);
   };
 
   const handleAiPractice = () => {
     sound.playClick();
-    onStartMatch('AI-PRACTICE', 'ai', 0);
+    onStartMatch('AI-PRACTICE', 'ai', 0, selectedMap);
   };
 
   return (
@@ -83,6 +87,47 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
             <Shield className="w-4 h-4 text-purple-200" />
             <span>عتاد القائد</span>
           </button>
+        </div>
+      </div>
+
+      {/* 3D Battlefield Map Selector */}
+      <div className="bg-slate-900/80 rounded-2xl p-3.5 border border-slate-800 backdrop-blur-sm">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-slate-300 font-bold flex items-center gap-1.5">
+            <span>🗺️ اختيار ساحة المعركة (Map):</span>
+          </span>
+          <span className="text-[10px] text-cyan-400 font-mono">
+            {selectedMap === 'warehouse' ? 'إرانغل (Erangel)' : 'ميرامار (Miramar)'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {(Object.values(MAP_CATALOG)).map((m) => {
+            const isSelected = selectedMap === m.id;
+            return (
+              <button
+                key={m.id}
+                onClick={() => {
+                  sound.playClick();
+                  setSelectedMap(m.id);
+                }}
+                className={`p-2.5 rounded-xl border text-right transition-all flex flex-col justify-between ${
+                  isSelected
+                    ? 'bg-gradient-to-r from-blue-900/50 to-cyan-900/50 border-cyan-400 shadow-md scale-[1.02]'
+                    : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 opacity-70'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xl">{m.icon}</span>
+                  {isSelected && <span className="text-emerald-400 text-xs font-bold">محدد ✓</span>}
+                </div>
+                <div className="mt-2">
+                  <div className="text-xs font-extrabold text-white truncate">{m.nameAr}</div>
+                  <div className="text-[10px] text-slate-400 truncate mt-0.5">{m.subtitleAr}</div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 

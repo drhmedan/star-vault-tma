@@ -3,11 +3,15 @@ import * as THREE from 'three';
 import confetti from 'canvas-confetti';
 import { 
   ArrowLeft, Crosshair, Shield, RefreshCw, Radio, 
-  Share2, Trophy, Skull, Eye, ChevronUp
+  Share2, Trophy, Skull, Eye, ChevronUp, Zap, Box, Compass
 } from 'lucide-react';
 import { UserProfile } from '../types';
-import { buildBattlefieldWorld, createSoldierMesh } from '../game3d/worldBuilder';
-import { CoverObstacle3D, SafeZone3D } from '../game3d/types3d';
+import { buildMapEnvironment, MAP_CATALOG } from '../game3d/mapRegistry';
+import { createSoldierMesh } from '../game3d/worldBuilder';
+import { 
+  CoverObstacle3D, SafeZone3D, CameraViewMode, 
+  MapId, WeaponSlotId, WeaponSlotState, LootItem3D 
+} from '../game3d/types3d';
 import { multiplayer, ConnectionStatus } from '../services/multiplayer';
 import { sound } from '../audio/soundEngine';
 
@@ -16,6 +20,7 @@ interface Pubg3DArenaProps {
   roomCode: string;
   mode: 'host' | 'join' | 'ai';
   stakeStars: number;
+  mapId?: MapId;
   onExit: () => void;
   onMatchComplete: (won: boolean, trophiesDelta: number, dustDelta: number, starsDelta: number) => void;
 }
@@ -25,6 +30,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   roomCode,
   mode,
   stakeStars,
+  mapId = 'warehouse',
   onExit,
   onMatchComplete
 }) => {
@@ -34,24 +40,62 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const [gameOver, setGameOver] = useState<'victory' | 'defeat' | null>(null);
   const [isLocked, setIsLocked] = useState<boolean>(false);
 
-  // HUD States
+  // View Mode: TPP vs FPP
+  const [viewMode, setViewMode] = useState<CameraViewMode>('tpp');
+  const viewModeRef = useRef<CameraViewMode>('tpp');
+
+  // HUD & Combat States
   const [hp, setHp] = useState<number>(100);
   const [armor, setArmor] = useState<number>(50);
-  const [ammoClip, setAmmoClip] = useState<number>(30);
-  const [ammoReserve, setAmmoReserve] = useState<number>(90);
   const [isReloading, setIsReloading] = useState<boolean>(false);
   const [isCrouching, setIsCrouching] = useState<boolean>(false);
   const [isAiming, setIsAiming] = useState<boolean>(false);
   const [kills, setKills] = useState<number>(0);
-  const [zoneTimer, setZoneTimer] = useState<number>(40);
+  const [zoneTimer, setZoneTimer] = useState<number>(45);
   const [outsideZone, setOutsideZone] = useState<boolean>(false);
   const [compassHeading, setCompassHeading] = useState<number>(0);
   const [medkits, setMedkits] = useState<number>(2);
 
-  // Game Refs
-  const playerPosRef = useRef<THREE.Vector3>(new THREE.Vector3(-4, 0, 11)); // Start behind the red car!
+  // 3-Slot Weapon Inventory System
+  const [activeSlot, setActiveSlot] = useState<WeaponSlotId>('primary');
+  const [weapons, setWeapons] = useState<Record<WeaponSlotId, WeaponSlotState | null>>({
+    primary: {
+      id: 'primary',
+      name: 'AK-47',
+      nameAr: 'كلاشينكوف (AK-47)',
+      weaponType: 'ak47',
+      damage: 34,
+      fireRateMs: 115,
+      magazineSize: 30,
+      reloadTimeMs: 2000,
+      ammoInClip: 30,
+      reserveAmmo: 90,
+      icon: '⚡'
+    },
+    secondary: null, // Empty until looted!
+    sidearm: {
+      id: 'sidearm',
+      name: 'P92 Pistol',
+      nameAr: 'مسدس جانبي (P92)',
+      weaponType: 'pistol',
+      damage: 26,
+      fireRateMs: 220,
+      magazineSize: 15,
+      reloadTimeMs: 1400,
+      ammoInClip: 15,
+      reserveAmmo: 45,
+      icon: '🔹'
+    }
+  });
+
+  // Nearby Ground Loot Pickup Prompt
+  const [nearbyLoot, setNearbyLoot] = useState<LootItem3D | null>(null);
+  const [damageFeed, setDamageFeed] = useState<string | null>(null);
+
+  // Game Coordinates & Physics Refs
+  const playerPosRef = useRef<THREE.Vector3>(new THREE.Vector3(-4, 0, 11)); // Behind the car
   const playerVelRef = useRef<THREE.Vector3>(new THREE.Vector3());
-  const playerAnglesRef = useRef<{ yaw: number; pitch: number }>({ yaw: Math.PI, pitch: 0 }); // Look towards compound
+  const playerAnglesRef = useRef<{ yaw: number; pitch: number }>({ yaw: Math.PI, pitch: 0 });
   const isCrouchedRef = useRef<boolean>(false);
   const isAimingRef = useRef<boolean>(false);
   const isFiringRef = useRef<boolean>(false);
@@ -61,10 +105,14 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const opponentHpRef = useRef<number>(100);
   const opponentMeshRef = useRef<ReturnType<typeof createSoldierMesh> | null>(null);
 
-  // Keyboard controls map
+  // Active Map & Loot Refs
+  const lootItemsRef = useRef<LootItem3D[]>([]);
   const keys = useRef<{ [k: string]: boolean }>({});
 
-  // 1. Networking Sync
+  // Touch Drag State for Mobile Camera
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  // 1. Networking Sync Setup
   useEffect(() => {
     multiplayer.init(
       user.id,
@@ -79,11 +127,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
             if (opponentMeshRef.current) {
               opponentMeshRef.current.root.position.set(s.x, s.y, s.z);
               opponentMeshRef.current.root.rotation.y = s.yaw;
-              if (s.isCrouching) {
-                opponentMeshRef.current.torso.position.y = 0.85;
-              } else {
-                opponentMeshRef.current.torso.position.y = 1.25;
-              }
+              opponentMeshRef.current.torso.position.y = s.isCrouching ? 0.85 : 1.25;
             }
           }
         } else if (msg.type === 'SHOOT_BULLETS') {
@@ -97,6 +141,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         } else if (msg.type === 'BULLET_HIT') {
           if (msg.payload.victimId === user.id) {
             takeDamage(msg.payload.damage);
+          }
+        } else if (msg.type === 'LOOT_TAKEN') {
+          const taken = lootItemsRef.current.find(l => l.id === msg.payload.lootId);
+          if (taken) {
+            taken.isCollected = true;
+            taken.mesh.visible = false;
           }
         } else if (msg.type === 'GAME_OVER') {
           if (msg.payload.winnerId === user.id) {
@@ -125,22 +175,21 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     };
   }, []);
 
-  // 2. Zone Timer countdown
+  // 2. Zone Timer Countdown
   useEffect(() => {
     const timer = setInterval(() => {
-      setZoneTimer(t => (t <= 1 ? 35 : t - 1));
+      setZoneTimer(t => (t <= 1 ? 40 : t - 1));
     }, 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // 3. MAIN THREE.JS 3D SCENE & ENGINE LOOP
+  // 3. MAIN THREE.JS 3D SCENE & ENGINE
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
 
-    // Renderer
     const width = container.clientWidth || 400;
-    const height = container.clientHeight || 550;
+    const height = container.clientHeight || 580;
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -148,17 +197,17 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
-    // Scene
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#384c68'); // Battlefield overcast sky
+    const meta = MAP_CATALOG[mapId];
+    scene.background = new THREE.Color(meta.skyColor);
 
-    // Build World (3D Red Car, Compound, Crates, Trees, Safe Zone)
-    const { obstacles, safeZone } = buildBattlefieldWorld(scene);
+    // Build World (Map Environment + Obstacles + 3D Loot)
+    const { obstacles, safeZone, lootItems } = buildMapEnvironment(mapId, scene);
+    lootItemsRef.current = lootItems;
 
-    // Camera
-    const camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 400);
+    const camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 450);
 
-    // 3D Player & Opponent Avatars
+    // 3D Soldiers
     const playerSoldier = createSoldierMesh(false);
     scene.add(playerSoldier.root);
 
@@ -167,10 +216,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     scene.add(opponentSoldier.root);
     opponentMeshRef.current = opponentSoldier;
 
-    // Raycaster for shooting & cover detection
-    const raycaster = new THREE.Raycaster();
-
-    // Resize Handler
+    // Window Resize Handler
     const handleResize = () => {
       if (!container) return;
       const w = container.clientWidth;
@@ -181,43 +227,48 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     };
     window.addEventListener('resize', handleResize);
 
-    // Controls: Keyboard
+    // Keyboard Listeners
     const onKeyDown = (e: KeyboardEvent) => {
       keys.current[e.key.toLowerCase()] = true;
-      if (e.key.toLowerCase() === 'c') {
+      if (e.key.toLowerCase() === 'v') {
+        toggleViewMode();
+      } else if (e.key.toLowerCase() === 'c') {
         toggleCrouch();
       } else if (e.key.toLowerCase() === 'r') {
-        reloadWeapon();
+        reloadActiveWeapon();
       } else if (e.key.toLowerCase() === 'e') {
         useMedkitItem();
+      } else if (e.key.toLowerCase() === 'f') {
+        pickupNearbyLoot();
+      } else if (e.key === '1') {
+        selectSlot('primary');
+      } else if (e.key === '2') {
+        selectSlot('secondary');
+      } else if (e.key === '3') {
+        selectSlot('sidearm');
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       keys.current[e.key.toLowerCase()] = false;
     };
 
-    // Pointer Lock Mouse Controls
+    // Pointer Lock Mouse Controls (PC)
     const onMouseMove = (e: MouseEvent) => {
       if (document.pointerLockElement !== renderer.domElement) return;
-      const sensitivity = 0.0022;
-      playerAnglesRef.current.yaw -= e.movementX * sensitivity;
-      playerAnglesRef.current.pitch -= e.movementY * sensitivity;
+      const sens = 0.0022;
+      playerAnglesRef.current.yaw -= e.movementX * sens;
+      playerAnglesRef.current.pitch -= e.movementY * sens;
+      playerAnglesRef.current.pitch = Math.max(-1.15, Math.min(1.15, playerAnglesRef.current.pitch));
 
-      // Clamp pitch (-60 to +60 degrees)
-      playerAnglesRef.current.pitch = Math.max(-1.1, Math.min(1.1, playerAnglesRef.current.pitch));
-
-      // Update Compass Heading
       const deg = Math.round(((-playerAnglesRef.current.yaw * 180) / Math.PI) % 360);
       setCompassHeading(deg < 0 ? deg + 360 : deg);
     };
 
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 0) {
-        // Shoot
         isFiringRef.current = true;
         triggerShoot(camera, scene, obstacles, opponentSoldier);
       } else if (e.button === 2) {
-        // ADS Scope Zoom
         e.preventDefault();
         isAimingRef.current = true;
         setIsAiming(true);
@@ -242,7 +293,6 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     window.addEventListener('mouseup', onMouseUp);
     renderer.domElement.addEventListener('contextmenu', onContextMenu);
 
-    // Lock Pointer on click
     const handleCanvasClick = () => {
       if (document.pointerLockElement !== renderer.domElement) {
         renderer.domElement.requestPointerLock();
@@ -267,8 +317,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const pos = playerPosRef.current;
       const vel = playerVelRef.current;
       const { yaw, pitch } = playerAnglesRef.current;
+      const curViewMode = viewModeRef.current;
 
-      // 1. Move Player in Camera Direction
+      // 1. Move Player relative to Camera Yaw
       const moveSpeed = isCrouchedRef.current ? 2.8 : 5.8;
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -288,25 +339,23 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       if (keys.current[' '] && pos.y <= 0.05 && !isCrouchedRef.current) {
         vel.y = 5.2;
       }
-      vel.y -= 15.0 * delta; // Gravity
+      vel.y -= 15.0 * delta;
       pos.y += vel.y * delta;
       if (pos.y < 0) {
         pos.y = 0;
         vel.y = 0;
       }
 
-      // Clamp to map boundary (350x350)
       pos.x = Math.max(-160, Math.min(160, pos.x));
       pos.z = Math.max(-160, Math.min(160, pos.z));
 
-      // 2. Obstacle Collisions (Simple Cylinder vs Box collision)
+      // 2. Obstacle Collision Resolution
       obstacles.forEach(obs => {
         const playerBox = new THREE.Box3(
-          new THREE.Vector3(pos.x - 0.4, pos.y, pos.z - 0.4),
-          new THREE.Vector3(pos.x + 0.4, pos.y + 1.8, pos.z + 0.4)
+          new THREE.Vector3(pos.x - 0.45, pos.y, pos.z - 0.45),
+          new THREE.Vector3(pos.x + 0.45, pos.y + 1.8, pos.z + 0.45)
         );
         if (obs.box.intersectsBox(playerBox)) {
-          // Push back
           const center = new THREE.Vector3();
           obs.box.getCenter(center);
           const push = pos.clone().sub(center).setY(0).normalize().multiplyScalar(0.08);
@@ -326,43 +375,74 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         playerSoldier.head.position.y = 1.95;
       }
 
-      // 4. Third-Person Over-the-Shoulder Camera Positioning
+      // 4. CAMERA VIEW CONTROLLER: TPP vs FPP (Dynamic Switch)
       const crouchOffset = isCrouchedRef.current ? -0.4 : 0;
-      const aimZoom = isAimingRef.current ? 0.5 : 1.0;
+      const aimZoom = isAimingRef.current ? 0.45 : 1.0;
 
-      // Base offset behind player's right shoulder (PUBG style)
-      const camOffset = new THREE.Vector3(
-        0.65 * aimZoom,
-        (1.8 + crouchOffset) * aimZoom,
-        -3.2 * aimZoom
-      );
+      if (curViewMode === 'fpp') {
+        // ========== FIRST-PERSON PERSPECTIVE (FPP) ==========
+        // Hide head and torso from local view so they don't block the camera
+        playerSoldier.torso.visible = false;
+        playerSoldier.head.visible = false;
 
-      // Rotate offset by Yaw and Pitch
-      camOffset.applyAxisAngle(new THREE.Vector3(1, 0, 0), pitch * 0.4);
-      camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+        // Position camera directly at soldier eye level
+        const fppOffset = new THREE.Vector3(0, 1.85 + crouchOffset, 0.1);
+        camera.position.copy(pos).add(fppOffset);
 
-      camera.position.copy(pos).add(camOffset);
+        const lookTarget = new THREE.Vector3(
+          pos.x - Math.sin(yaw) * 40,
+          pos.y + 1.85 + crouchOffset + Math.sin(pitch) * 40,
+          pos.z - Math.cos(yaw) * 40
+        );
+        camera.lookAt(lookTarget);
 
-      // Camera looks at target point ahead through crosshair
-      const targetLook = new THREE.Vector3(
-        pos.x - Math.sin(yaw) * 40,
-        pos.y + 1.7 + crouchOffset + Math.sin(pitch) * 40,
-        pos.z - Math.cos(yaw) * 40
-      );
-      camera.lookAt(targetLook);
+      } else {
+        // ========== THIRD-PERSON PERSPECTIVE (TPP) ==========
+        playerSoldier.torso.visible = true;
+        playerSoldier.head.visible = true;
 
-      // Scope FOV Zoom
-      camera.fov = isAimingRef.current ? 38 : 65;
+        const camOffset = new THREE.Vector3(
+          0.65 * aimZoom,
+          (1.85 + crouchOffset) * aimZoom,
+          -3.2 * aimZoom
+        );
+        camOffset.applyAxisAngle(new THREE.Vector3(1, 0, 0), pitch * 0.4);
+        camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+        camera.position.copy(pos).add(camOffset);
+
+        const lookTarget = new THREE.Vector3(
+          pos.x - Math.sin(yaw) * 40,
+          pos.y + 1.7 + crouchOffset + Math.sin(pitch) * 40,
+          pos.z - Math.cos(yaw) * 40
+        );
+        camera.lookAt(lookTarget);
+      }
+
+      camera.fov = isAimingRef.current ? 36 : (curViewMode === 'fpp' ? 70 : 65);
       camera.updateProjectionMatrix();
 
-      // 5. Update Shrinking Safe Zone 3D
+      // 5. Ground Loot Detection (Check if near loot items)
+      let foundNearby: LootItem3D | null = null;
+      lootItemsRef.current.forEach(loot => {
+        if (loot.isCollected) return;
+        // Rotate floating 3D loot mesh
+        loot.mesh.rotation.y += 0.02;
+        const d = pos.distanceTo(loot.pos);
+        if (d < 3.2) {
+          foundNearby = loot;
+        }
+      });
+      setNearbyLoot(foundNearby);
+
+      // 6. Safe Zone Shrink & Outside Damage
       if (safeZone.radius > safeZone.targetRadius) {
         safeZone.radius -= safeZone.shrinkSpeed * delta;
         safeZone.mesh.scale.set(safeZone.radius / 75, 1, safeZone.radius / 75);
       }
 
-      const distFromCenter = Math.hypot(pos.x, pos.z);
-      const isOut = distFromCenter > safeZone.radius;
+      const distCenter = Math.hypot(pos.x, pos.z);
+      const isOut = distCenter > safeZone.radius;
       setOutsideZone(isOut);
 
       const now = Date.now();
@@ -371,37 +451,32 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         takeDamage(6);
       }
 
-      // 6. AI Opponent Logic in Solo Mode
+      // 7. AI Opponent Simulation in Solo Mode
       if (mode === 'ai' && opponentHpRef.current > 0) {
         const oppPos = opponentPosRef.current;
-        const distToPlayer = oppPos.distanceTo(pos);
-
-        // Turn towards player
+        const dist = oppPos.distanceTo(pos);
         const targetAngle = Math.atan2(pos.x - oppPos.x, pos.z - oppPos.z);
         opponentSoldier.root.rotation.y = targetAngle;
 
-        // Move towards player or take cover behind compound
-        if (distToPlayer > 18) {
-          oppPos.x += Math.sin(targetAngle) * 2.8 * delta;
-          oppPos.z += Math.cos(targetAngle) * 2.8 * delta;
+        if (dist > 16) {
+          oppPos.x += Math.sin(targetAngle) * 3.0 * delta;
+          oppPos.z += Math.cos(targetAngle) * 3.0 * delta;
           opponentSoldier.root.position.copy(oppPos);
         }
 
-        // AI fires if within 40 meters
-        if (distToPlayer < 45 && now - opponentSoldier.root.userData.lastFireTime > 380) {
+        if (dist < 42 && now - opponentSoldier.root.userData.lastFireTime > 360) {
           opponentSoldier.root.userData.lastFireTime = now;
           opponentSoldier.muzzleLight.intensity = 3;
           setTimeout(() => (opponentSoldier.muzzleLight.intensity = 0), 50);
           sound.playGunshot('ak47');
 
-          // Check hit on player
-          if (Math.random() < 0.45 && !isCrouchedRef.current) {
-            takeDamage(14);
+          if (Math.random() < 0.42 && !isCrouchedRef.current) {
+            takeDamage(15);
           }
         }
       }
 
-      // 7. Network State Broadcast (every 45ms)
+      // 8. State Broadcast
       if (now - lastNetworkSync > 45 && mode !== 'ai') {
         lastNetworkSync = now;
         multiplayer.sendShooterState({
@@ -436,62 +511,135 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       }
       renderer.dispose();
     };
-  }, []);
+  }, [mapId]);
 
-  // Shoot Action (3D Raycasting)
+  // View Mode Toggle (TPP vs FPP)
+  const toggleViewMode = () => {
+    sound.playClick();
+    const next = viewMode === 'tpp' ? 'fpp' : 'tpp';
+    setViewMode(next);
+    viewModeRef.current = next;
+  };
+
+  // Weapon Slot Switching
+  const selectSlot = (slot: WeaponSlotId) => {
+    if (!weapons[slot]) return;
+    sound.playPickup();
+    setActiveSlot(slot);
+  };
+
+  // Pickup Nearby Ground Loot
+  const pickupNearbyLoot = () => {
+    if (!nearbyLoot) return;
+    sound.playPickup();
+
+    if (nearbyLoot.type === 'weapon' && nearbyLoot.weaponType) {
+      const newGun: WeaponSlotState = nearbyLoot.weaponType === 'awm' ? {
+        id: 'secondary',
+        name: 'AWM Sniper',
+        nameAr: 'قناصة AWM الأسطورية',
+        weaponType: 'awm',
+        damage: 120,
+        fireRateMs: 1200,
+        magazineSize: 5,
+        reloadTimeMs: 2800,
+        ammoInClip: 5,
+        reserveAmmo: 25,
+        icon: '🎯'
+      } : {
+        id: 'secondary',
+        name: 'S1897 Shotgun',
+        nameAr: 'شوزن قتالي S1897',
+        weaponType: 'shotgun',
+        damage: 130,
+        fireRateMs: 800,
+        magazineSize: 5,
+        reloadTimeMs: 2400,
+        ammoInClip: 5,
+        reserveAmmo: 30,
+        icon: '💥'
+      };
+
+      setWeapons(prev => ({ ...prev, secondary: newGun }));
+      setActiveSlot('secondary');
+    } else if (nearbyLoot.type === 'ammo') {
+      setWeapons(prev => {
+        const cur = prev[activeSlot];
+        if (!cur) return prev;
+        return {
+          ...prev,
+          [activeSlot]: { ...cur, reserveAmmo: cur.reserveAmmo + 60 }
+        };
+      });
+    } else if (nearbyLoot.type === 'medkit') {
+      setMedkits(m => m + 1);
+    }
+
+    nearbyLoot.isCollected = true;
+    nearbyLoot.mesh.visible = false;
+    multiplayer.sendLootTaken(nearbyLoot.id);
+    setNearbyLoot(null);
+  };
+
+  // Shoot Action (3D Raycasting Hitbox Detection)
   const triggerShoot = (
     camera: THREE.Camera, 
     scene: THREE.Scene, 
     obstacles: CoverObstacle3D[],
     oppSoldier: ReturnType<typeof createSoldierMesh>
   ) => {
-    if (isReloading || ammoClip <= 0) {
-      if (ammoClip <= 0) reloadWeapon();
+    const curWeapon = weapons[activeSlot];
+    if (!curWeapon || isReloading || curWeapon.ammoInClip <= 0) {
+      if (curWeapon && curWeapon.ammoInClip <= 0) reloadActiveWeapon();
       return;
     }
 
     const now = Date.now();
-    if (now - lastFireTimeRef.current < 115) return; // AK-47 fire rate
+    if (now - lastFireTimeRef.current < curWeapon.fireRateMs) return;
     lastFireTimeRef.current = now;
 
-    setAmmoClip(a => a - 1);
-    sound.playGunshot('ak47');
+    // Decrement ammo
+    setWeapons(prev => ({
+      ...prev,
+      [activeSlot]: { ...curWeapon, ammoInClip: curWeapon.ammoInClip - 1 }
+    }));
 
-    // Muzzle flash on player
-    // Raycast from camera center
+    sound.playGunshot(curWeapon.weaponType);
+
+    // 3D Raycasting from crosshair center
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
 
-    // Intersect objects
     const targets = [oppSoldier.head, oppSoldier.torso, ...obstacles.map(o => o.mesh)];
     const intersects = raycaster.intersectObjects(targets, true);
 
     if (intersects.length > 0) {
       const hit = intersects[0];
 
-      // Create spark light on hit point
+      // Impact light
       const spark = new THREE.PointLight('#f59e0b', 3, 2);
       spark.position.copy(hit.point);
       scene.add(spark);
       setTimeout(() => scene.remove(spark), 120);
 
-      // Check if enemy hit
+      // Check hit target
       if (hit.object === oppSoldier.head) {
-        // HEADSHOT! 🎯
         sound.playExplosion();
-        damageOpponent(75, true);
+        damageOpponent(curWeapon.damage * 2.2, true);
       } else if (hit.object === oppSoldier.torso || oppSoldier.root.getObjectById(hit.object.id)) {
-        damageOpponent(35, false);
+        damageOpponent(curWeapon.damage, false);
       }
     }
 
-    // Sync shoot to peer
-    multiplayer.sendShootBullets([{ weaponType: 'ak47' }]);
+    multiplayer.sendShootBullets([{ weaponType: curWeapon.weaponType }]);
   };
 
   const damageOpponent = (dmg: number, isHeadshot: boolean) => {
     opponentHpRef.current = Math.max(0, opponentHpRef.current - dmg);
-    multiplayer.sendBulletHit(999999, dmg, 'ak47');
+    multiplayer.sendBulletHit(999999, dmg, weapons[activeSlot]?.weaponType || 'ak47');
+
+    setDamageFeed(isHeadshot ? `🎯 HEADSHOT! -${Math.round(dmg)}` : `💥 HIT! -${Math.round(dmg)}`);
+    setTimeout(() => setDamageFeed(null), 1200);
 
     if (opponentHpRef.current <= 0) {
       setKills(k => k + 1);
@@ -501,18 +649,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
   const takeDamage = (dmg: number) => {
     sound.playHurt();
-    setHp(prevHp => {
-      let currentArmor = armor;
-      let newHp = prevHp;
-
-      if (currentArmor > 0) {
-        const absorbed = Math.min(currentArmor, Math.round(dmg * 0.6));
+    setHp(prev => {
+      let curArmor = armor;
+      let newHp = prev;
+      if (curArmor > 0) {
+        const absorbed = Math.min(curArmor, Math.round(dmg * 0.6));
         setArmor(a => Math.max(0, a - absorbed));
         newHp -= (dmg - absorbed);
       } else {
         newHp -= dmg;
       }
-
       if (newHp <= 0) {
         handleDefeat();
         return 0;
@@ -527,18 +673,26 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     sound.playPickup();
   };
 
-  const reloadWeapon = () => {
-    if (isReloading || ammoClip === 30 || ammoReserve <= 0) return;
+  const reloadActiveWeapon = () => {
+    const cur = weapons[activeSlot];
+    if (!cur || isReloading || cur.ammoInClip === cur.magazineSize || cur.reserveAmmo <= 0) return;
+
     setIsReloading(true);
     sound.playReload();
 
     setTimeout(() => {
-      const needed = 30 - ammoClip;
-      const reloadAmt = Math.min(needed, ammoReserve);
-      setAmmoClip(c => c + reloadAmt);
-      setAmmoReserve(r => r - reloadAmt);
+      const needed = cur.magazineSize - cur.ammoInClip;
+      const reloadAmt = Math.min(needed, cur.reserveAmmo);
+      setWeapons(prev => ({
+        ...prev,
+        [activeSlot]: {
+          ...cur,
+          ammoInClip: cur.ammoInClip + reloadAmt,
+          reserveAmmo: cur.reserveAmmo - reloadAmt
+        }
+      }));
       setIsReloading(false);
-    }, 2000);
+    }, cur.reloadTimeMs);
   };
 
   const useMedkitItem = () => {
@@ -552,7 +706,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     if (gameOver) return;
     setGameOver('victory');
     sound.playReveal('mythic');
-    confetti({ particleCount: 120, spread: 90, origin: { y: 0.5 } });
+    confetti({ particleCount: 140, spread: 90, origin: { y: 0.5 } });
     multiplayer.sendGameOver(user.id);
     const starReward = stakeStars > 0 ? Math.floor(stakeStars * 1.8) : 0;
     onMatchComplete(true, 50, 200, starReward);
@@ -565,42 +719,84 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     onMatchComplete(false, -20, 30, 0);
   };
 
-  // Mobile Touch Controls
-  const handleTouchMoveJoystick = (dir: 'forward' | 'back' | 'left' | 'right', active: boolean) => {
-    const map = { forward: 'w', back: 's', left: 'a', right: 'd' };
-    keys.current[map[dir]] = active;
+  // Mobile Touch Drag for Camera Yaw & Pitch
+  const handleTouchStartRight = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    touchStartRef.current = { x: t.clientX, y: t.clientY };
   };
 
+  const handleTouchMoveRight = (e: React.TouchEvent) => {
+    if (!touchStartRef.current) return;
+    const t = e.touches[0];
+    const dx = t.clientX - touchStartRef.current.x;
+    const dy = t.clientY - touchStartRef.current.y;
+    touchStartRef.current = { x: t.clientX, y: t.clientY };
+
+    const sens = 0.006;
+    playerAnglesRef.current.yaw -= dx * sens;
+    playerAnglesRef.current.pitch -= dy * sens;
+    playerAnglesRef.current.pitch = Math.max(-1.15, Math.min(1.15, playerAnglesRef.current.pitch));
+  };
+
+  const activeWeapon = weapons[activeSlot];
+
   return (
-    <div className="relative w-full h-[660px] max-w-md mx-auto bg-slate-950 rounded-3xl overflow-hidden border border-slate-800 shadow-2xl flex flex-col select-none">
+    <div className="relative w-full h-[680px] max-w-md mx-auto bg-slate-950 rounded-3xl overflow-hidden border border-slate-800 shadow-2xl flex flex-col select-none">
       {/* 3D WebGL Canvas Container */}
       <div 
         ref={mountRef} 
         className="w-full h-full relative cursor-crosshair overflow-hidden"
       >
-        {/* Click to lock mouse banner for PC */}
+        {/* PC Pointer Lock Banner */}
         {!isLocked && (
-          <div className="absolute top-16 inset-x-0 mx-auto w-max bg-black/75 backdrop-blur-md px-4 py-1.5 rounded-full border border-slate-700/60 text-white text-xs font-bold pointer-events-none z-30 animate-pulse">
-            🖱️ انقر بالماوس لقفل الكاميرا والتصويب بحرية
+          <div className="absolute top-16 inset-x-0 mx-auto w-max bg-black/80 backdrop-blur-md px-4 py-1.5 rounded-full border border-slate-700/60 text-white text-xs font-bold pointer-events-none z-30 animate-pulse">
+            🖱️ انقر بالماوس لقفل الكاميرا والتصويب الحر
           </div>
         )}
 
         {/* Center Crosshair (PUBG Tactical Reticle) */}
-        <div className="absolute inset-0 m-auto w-7 h-7 pointer-events-none flex items-center justify-center z-10">
-          <div className={`w-1.5 h-1.5 rounded-full bg-cyan-400 ${isAiming ? 'scale-75' : ''}`} />
-          <div className="absolute top-0 w-0.5 h-2 bg-cyan-400/80" />
-          <div className="absolute bottom-0 w-0.5 h-2 bg-cyan-400/80" />
-          <div className="absolute left-0 w-2 h-0.5 bg-cyan-400/80" />
-          <div className="absolute right-0 w-2 h-0.5 bg-cyan-400/80" />
+        <div className="absolute inset-0 m-auto w-8 h-8 pointer-events-none flex items-center justify-center z-10">
+          <div className={`w-1.5 h-1.5 rounded-full bg-cyan-400 ${isAiming ? 'scale-75 bg-amber-400' : ''}`} />
+          <div className="absolute top-0 w-0.5 h-2.5 bg-cyan-400/80" />
+          <div className="absolute bottom-0 w-0.5 h-2.5 bg-cyan-400/80" />
+          <div className="absolute left-0 w-2.5 h-0.5 bg-cyan-400/80" />
+          <div className="absolute right-0 w-2.5 h-0.5 bg-cyan-400/80" />
         </div>
 
-        {/* Outside Zone Flash Warning */}
+        {/* Floating Damage Hit Number */}
+        {damageFeed && (
+          <div className="absolute top-1/3 inset-x-0 mx-auto w-max text-red-400 font-black text-sm animate-bounce z-30 drop-shadow-md">
+            {damageFeed}
+          </div>
+        )}
+
+        {/* Nearby Ground Loot Pickup Floating Button */}
+        {nearbyLoot && (
+          <div className="absolute bottom-32 inset-x-0 mx-auto w-max z-30 animate-bounce">
+            <button
+              onClick={pickupNearbyLoot}
+              className="px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-600 text-white font-extrabold text-xs rounded-2xl shadow-xl flex items-center gap-2 border border-amber-300 active:scale-95"
+            >
+              <Box className="w-4 h-4" />
+              <span>التقاط {nearbyLoot.nameAr} [F]</span>
+            </button>
+          </div>
+        )}
+
+        {/* Safe Zone Flash Warning */}
         {outsideZone && (
           <div className="absolute inset-0 bg-red-600/20 border-4 border-red-500 pointer-events-none animate-pulse z-20" />
         )}
+
+        {/* Mobile Right Touch Pan Area */}
+        <div
+          className="absolute right-0 top-20 bottom-36 w-1/2 z-10 touch-none"
+          onTouchStart={handleTouchStartRight}
+          onTouchMove={handleTouchMoveRight}
+        />
       </div>
 
-      {/* Top HUD: PUBG Style Compass, Alive & Zone */}
+      {/* Top HUD: Compass, Alive, Kills, Zone, and TPP/FPP Toggle */}
       <div className="absolute top-2 inset-x-2 z-20 flex items-center justify-between pointer-events-none">
         {/* Left: Exit & Opponent status */}
         <div className="flex items-center gap-1.5 pointer-events-auto">
@@ -613,44 +809,47 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           >
             <ArrowLeft className="w-4 h-4 transform rotate-180" />
           </button>
-          <div className="bg-slate-900/80 backdrop-blur-md px-3 py-1 rounded-xl border border-slate-700/60 flex items-center gap-1.5">
+          <div className="bg-slate-900/80 backdrop-blur-md px-2.5 py-1 rounded-xl border border-slate-700/60 flex items-center gap-1.5">
             <Radio className={`w-3.5 h-3.5 ${connStatus === 'connected' ? 'text-emerald-400 animate-pulse' : 'text-amber-400'}`} />
-            <span className="text-xs font-bold text-white">{opponentName}</span>
+            <span className="text-[11px] font-bold text-white">{opponentName}</span>
           </div>
         </div>
 
-        {/* Center: Tactical Compass Heading Tape */}
-        <div className="bg-black/70 backdrop-blur-md px-4 py-1 rounded-xl border border-slate-700/60 text-white font-mono text-xs font-extrabold flex items-center gap-2">
+        {/* Center: Tactical Compass Heading */}
+        <div className="bg-black/75 backdrop-blur-md px-3 py-1 rounded-xl border border-slate-700/60 text-white font-mono text-xs font-extrabold flex items-center gap-1.5">
+          <Compass className="w-3.5 h-3.5 text-cyan-400" />
           <span className="text-cyan-400">{compassHeading}°</span>
           <span className="text-[10px] text-slate-400">
             {compassHeading >= 315 || compassHeading < 45 ? 'N' : compassHeading < 135 ? 'E' : compassHeading < 225 ? 'S' : 'W'}
           </span>
         </div>
 
-        {/* Right: Alive, Kills, & Zone Timer */}
+        {/* Right: TPP/FPP Toggle & Zone Timer */}
         <div className="flex items-center gap-1.5 pointer-events-auto">
-          <div className="bg-black/70 backdrop-blur-md px-2.5 py-1 rounded-xl border border-slate-700/60 flex items-center gap-2 text-xs">
-            <span className="text-emerald-400 font-extrabold">2 أحياء</span>
-            <span className="w-[1px] h-3 bg-slate-700" />
-            <span className="text-red-400 font-bold flex items-center gap-0.5">
-              <Skull className="w-3 h-3" /> {kills}
-            </span>
-          </div>
-          <div className="bg-cyan-950/70 border border-cyan-500/40 text-cyan-300 px-2.5 py-1 rounded-xl text-xs font-mono font-bold">
+          <button
+            onClick={toggleViewMode}
+            className="px-2.5 py-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-black text-xs rounded-xl border border-blue-400/40 shadow-lg flex items-center gap-1 active:scale-95"
+            title="تبديل منظور الشخص الأول والثالث [V]"
+          >
+            <Eye className="w-3.5 h-3.5 text-cyan-300" />
+            <span>{viewMode.toUpperCase()}</span>
+          </button>
+
+          <div className="bg-cyan-950/70 border border-cyan-500/40 text-cyan-300 px-2 py-1 rounded-xl text-xs font-mono font-bold">
             ⚡ {zoneTimer}s
           </div>
         </div>
       </div>
 
-      {/* Bottom HUD: Health, Armor, Ammo, Crouch, Scope Controls */}
-      <div className="absolute bottom-3 inset-x-3 z-20 flex flex-col gap-2 pointer-events-auto">
+      {/* Bottom HUD: Health, Armor, 3-Slot Weapons, & Touch Controls */}
+      <div className="absolute bottom-2 inset-x-2 z-20 flex flex-col gap-1.5 pointer-events-auto">
         {/* Health & Armor Bars */}
         <div className="bg-slate-950/85 backdrop-blur-md p-2 rounded-2xl border border-slate-800 flex items-center justify-between gap-3">
           <div className="flex-1 space-y-1">
             <div className="flex items-center justify-between text-[10px] font-bold">
               <span className="text-emerald-400 flex items-center gap-1">
                 <span>الصحة (HP)</span>
-                {isCrouching && <span className="text-cyan-400 text-[9px] bg-cyan-950 px-1 rounded border border-cyan-800">محتمي خلف الساتر</span>}
+                {isCrouching && <span className="text-cyan-400 text-[9px] bg-cyan-950 px-1 rounded border border-cyan-800">محتمي 🛡️</span>}
               </span>
               <span className="text-white font-mono">{hp}/100</span>
             </div>
@@ -674,70 +873,140 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           <button
             onClick={useMedkitItem}
             disabled={medkits <= 0 || hp >= 100}
-            className="px-3 py-2 bg-emerald-950/60 border border-emerald-500/40 hover:bg-emerald-800/60 disabled:opacity-40 text-emerald-300 rounded-xl flex flex-col items-center justify-center text-xs font-bold"
+            className="px-2.5 py-1.5 bg-emerald-950/60 border border-emerald-500/40 hover:bg-emerald-800/60 disabled:opacity-40 text-emerald-300 rounded-xl flex flex-col items-center justify-center text-xs font-bold"
           >
             <span>🩹 x{medkits}</span>
             <span className="text-[9px] text-slate-400">علاج [E]</span>
           </button>
         </div>
 
-        {/* Tactical Controls & Mobile Action Bar */}
+        {/* 3-Slot Weapon Switcher Strip */}
+        <div className="grid grid-cols-3 gap-1.5">
+          {(['primary', 'secondary', 'sidearm'] as WeaponSlotId[]).map((slot, idx) => {
+            const w = weapons[slot];
+            const isCurrent = activeSlot === slot;
+
+            return (
+              <button
+                key={slot}
+                onClick={() => selectSlot(slot)}
+                disabled={!w}
+                className={`p-1.5 rounded-xl border text-right transition-all flex items-center gap-2 ${
+                  isCurrent
+                    ? 'bg-cyan-950/70 border-cyan-400 shadow-md scale-[1.02]'
+                    : w
+                    ? 'bg-slate-900/80 border-slate-800 hover:border-slate-700'
+                    : 'bg-slate-950/40 border-slate-900 opacity-40'
+                }`}
+              >
+                <div className="w-8 h-8 rounded-lg bg-black/40 flex items-center justify-center text-base">
+                  {w ? w.icon : '➕'}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[10px] font-bold text-white truncate">
+                    {w ? w.name : `خانة ${idx + 1}`}
+                  </div>
+                  <div className="text-[9px] text-amber-400 font-mono">
+                    {w ? `${w.ammoInClip}/${w.reserveAmmo}` : 'فارغ'}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Mobile Action Controls Bar */}
         <div className="bg-slate-950/90 backdrop-blur-md p-2 rounded-2xl border border-slate-800 flex items-center justify-between">
-          {/* Weapon Ammo Display */}
-          <div className="flex items-center gap-2.5">
-            <div className="w-11 h-11 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center text-2xl shadow-inner">
-              ⚡
-            </div>
-            <div>
-              <div className="text-xs font-bold text-white flex items-center gap-1">
-                <span>AK-47 كلاشينكوف</span>
-                {isReloading && <span className="text-[9px] text-amber-400 animate-pulse">تلقيم...</span>}
-              </div>
-              <div className="text-sm font-black text-amber-400 font-mono">
-                {ammoClip} <span className="text-xs text-slate-500">/ {ammoReserve}</span>
-              </div>
-            </div>
+          {/* Mobile Movement Buttons (Left Joystick Alternative) */}
+          <div className="grid grid-cols-3 gap-1 w-28">
+            <div />
+            <button
+              onMouseDown={() => (keys.current['w'] = true)}
+              onMouseUp={() => (keys.current['w'] = false)}
+              onTouchStart={() => (keys.current['w'] = true)}
+              onTouchEnd={() => (keys.current['w'] = false)}
+              className="p-2 bg-slate-800 text-white rounded-lg flex items-center justify-center text-xs active:bg-cyan-600"
+            >
+              ⬆️
+            </button>
+            <div />
+            <button
+              onMouseDown={() => (keys.current['a'] = true)}
+              onMouseUp={() => (keys.current['a'] = false)}
+              onTouchStart={() => (keys.current['a'] = true)}
+              onTouchEnd={() => (keys.current['a'] = false)}
+              className="p-2 bg-slate-800 text-white rounded-lg flex items-center justify-center text-xs active:bg-cyan-600"
+            >
+              ⬅️
+            </button>
+            <button
+              onMouseDown={() => (keys.current['s'] = true)}
+              onMouseUp={() => (keys.current['s'] = false)}
+              onTouchStart={() => (keys.current['s'] = true)}
+              onTouchEnd={() => (keys.current['s'] = false)}
+              className="p-2 bg-slate-800 text-white rounded-lg flex items-center justify-center text-xs active:bg-cyan-600"
+            >
+              ⬇️
+            </button>
+            <button
+              onMouseDown={() => (keys.current['d'] = true)}
+              onMouseUp={() => (keys.current['d'] = false)}
+              onTouchStart={() => (keys.current['d'] = true)}
+              onTouchEnd={() => (keys.current['d'] = false)}
+              className="p-2 bg-slate-800 text-white rounded-lg flex items-center justify-center text-xs active:bg-cyan-600"
+            >
+              ➡️
+            </button>
           </div>
 
-          {/* Action Buttons: Crouch, ADS Scope, Reload, Fire */}
+          {/* Action Buttons: Crouch, Scope, Reload, Fire */}
           <div className="flex items-center gap-1.5">
-            {/* Crouch Button */}
             <button
               onClick={toggleCrouch}
-              className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-1 transition-all ${
+              className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
                 isCrouching
-                  ? 'bg-cyan-600 text-white border-cyan-400 shadow-md scale-105'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                  ? 'bg-cyan-600 text-white border-cyan-400 shadow-md'
+                  : 'bg-slate-800 text-slate-300 border-slate-700'
               }`}
-              title="انحناء للاحتماء خلف السيارة أو الساتر"
+              title="انحناء للاحتماء خلف السيارة"
             >
               <Shield className="w-4 h-4" />
-              <span>{isCrouching ? 'وقوف' : 'انحناء [C]'}</span>
             </button>
 
-            {/* ADS Scope Zoom Button */}
             <button
               onClick={() => {
                 isAimingRef.current = !isAimingRef.current;
                 setIsAiming(isAimingRef.current);
               }}
-              className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-1 transition-all ${
+              className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
                 isAiming
                   ? 'bg-purple-600 text-white border-purple-400 shadow-md'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                  : 'bg-slate-800 text-slate-300 border-slate-700'
               }`}
+              title="تقريب السكوب"
             >
               <Eye className="w-4 h-4" />
-              <span>سكوب</span>
             </button>
 
-            {/* Reload Button */}
             <button
-              onClick={reloadWeapon}
+              onClick={reloadActiveWeapon}
               disabled={isReloading}
               className="p-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold"
+              title="تلقيم"
             >
               <RefreshCw className={`w-4 h-4 ${isReloading ? 'animate-spin text-amber-400' : ''}`} />
+            </button>
+
+            {/* Fire Button */}
+            <button
+              onMouseDown={() => (isFiringRef.current = true)}
+              onMouseUp={() => (isFiringRef.current = false)}
+              onTouchStart={() => (isFiringRef.current = true)}
+              onTouchEnd={() => (isFiringRef.current = false)}
+              className="px-4 py-2.5 bg-gradient-to-r from-red-600 to-amber-600 text-white font-black text-xs rounded-xl shadow-lg active:scale-95 transition-all flex items-center gap-1"
+            >
+              <Crosshair className="w-4 h-4" />
+              <span>إطلاق 🔥</span>
             </button>
           </div>
         </div>

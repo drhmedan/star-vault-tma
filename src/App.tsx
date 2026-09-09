@@ -18,6 +18,7 @@ import { CyberTacticsArena } from './components/CyberTacticsArena';
 import { PubgArena } from './components/PubgArena';
 import { Pubg3DArena } from './components/Pubg3DArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
+import { MapId } from './game3d/types3d';
 import { sound } from './audio/soundEngine';
 
 type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals';
@@ -32,6 +33,7 @@ export const App: React.FC = () => {
     roomCode: string;
     mode: 'host' | 'join' | 'ai';
     stakeStars: number;
+    mapId?: MapId;
   } | null>(null);
 
   // Initialize or load user profile
@@ -188,7 +190,7 @@ export const App: React.FC = () => {
   };
 
   // PvP Tactical Handlers
-  const handleStartPvPMatch = (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number) => {
+  const handleStartPvPMatch = (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number, mapId: MapId = 'warehouse') => {
     if (stakeStars > 0 && user.stars < stakeStars) {
       setTab('shop');
       return;
@@ -196,7 +198,7 @@ export const App: React.FC = () => {
     if (stakeStars > 0) {
       setUser(p => ({ ...p, stars: p.stars - stakeStars }));
     }
-    setActiveMatch({ roomCode, mode, stakeStars });
+    setActiveMatch({ roomCode, mode, stakeStars, mapId });
   };
 
   const handleMatchComplete = (won: boolean, trophiesDelta: number, dustDelta: number, starsDelta: number) => {
@@ -231,6 +233,7 @@ export const App: React.FC = () => {
               roomCode={activeMatch.roomCode}
               mode={activeMatch.mode}
               stakeStars={activeMatch.stakeStars}
+              mapId={activeMatch.mapId}
               onExit={() => setActiveMatch(null)}
               onMatchComplete={handleMatchComplete}
             />
