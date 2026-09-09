@@ -115,6 +115,7 @@ interface MapMaterials {
   trunk: THREE.MeshStandardMaterial;
   rust: THREE.MeshStandardMaterial;
   debris: THREE.MeshStandardMaterial;
+  windowGlow: THREE.MeshBasicMaterial;
 }
 
 function makeMaterials(meta: MapMetadata): MapMaterials {
@@ -138,7 +139,11 @@ function makeMaterials(meta: MapMetadata): MapMaterials {
     foliageDark: std('#2f4a28', 0.9, 0.0),
     trunk: std('#4a3a28', 0.95, 0.0),
     rust: std('#6a3a24', 0.6, 0.35),
-    debris: std('#54524a', 0.95, 0.02)
+    debris: std('#54524a', 0.95, 0.02),
+    // Unlit warm glow shared by lit windows, street lamps, shop signs and the
+    // watchtower spotlight — a single material so every glowing surface merges
+    // into one draw call. Fades into fog naturally.
+    windowGlow: new THREE.MeshBasicMaterial({ color: 0xffb45f })
   };
 }
 
@@ -235,6 +240,12 @@ const RIVER_POINTS: [number, number][] = [[-72, 78], [-56, 40], [-52, 2], [-40, 
 const ROAD_A_X = -2;
 const ROAD_B_Z = 4;
 const CRATERS: [number, number, number][] = [[24, -40, 7], [-60, -18, 6], [58, 52, 8], [-20, 74, 6], [12, -80, 5]];
+// Paved lots under and around each building — flattened in the heightfield and
+// painted as worn concrete in the ground vertex colours.
+const PLAZAS: [number, number, number][] = [
+  [-40, 40, 20], [40, -40, 20], [30, 26, 22], [-46, -30, 24],
+  [42, 8, 18], [-30, -66, 14], [-8, -38, 16]
+];
 
 function distToSeg(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
   const dx = bx - ax, dz = bz - az;
@@ -279,11 +290,7 @@ function terrainHeight(x: number, z: number): number {
     if (d < cr) h -= Math.pow(1 - d / cr, 2) * 2.0;
   });
 
-  const plazas: [number, number, number][] = [
-    [-40, 40, 20], [40, -40, 20], [30, 26, 22], [-46, -30, 24],
-    [42, 8, 18], [-30, -66, 14], [-8, -38, 16]
-  ];
-  plazas.forEach(([px, pz, pr]) => {
+  PLAZAS.forEach(([px, pz, pr]) => {
     const d = Math.hypot(x - px, z - pz);
     if (d < pr) {
       const t = smooth(1 - d / pr);
@@ -327,6 +334,8 @@ function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId, sunDir
   const asphalt = new THREE.Color('#26292b');
   const asphaltWorn = new THREE.Color('#3a3d3c');
   const craterDirt = new THREE.Color('#5f584a');
+  const pavement = new THREE.Color('#6d7168');
+  const pavementWorn = new THREE.Color('#5a5e55');
   const warm = new THREE.Color(meta.sunColor);
   const cool = new THREE.Color(meta.hemisphereSky);
   const tmp = new THREE.Color();
@@ -387,6 +396,21 @@ function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId, sunDir
         const cx = CRATERS[k][0], cz = CRATERS[k][1], cr = CRATERS[k][2];
         const d = Math.hypot(x - cx, z - cz);
         if (d < cr) c.lerp(craterDirt, clamp01(1 - d / cr) * 0.6);
+      }
+    }
+
+    // Paved building lots: worn concrete that fades into the meadow at the rim
+    // (never overwrites roads or the riverbed).
+    if (mapId === 'warzone' && rd >= 6.8 && rivD >= 7.5) {
+      for (let k = 0; k < PLAZAS.length; k++) {
+        const px = PLAZAS[k][0], pz = PLAZAS[k][1], pr = PLAZAS[k][2];
+        const d = Math.hypot(x - px, z - pz);
+        if (d < pr) {
+          const t = smooth(1 - d / pr);
+          const wear = Math.sin(x * 0.35 + pz) * Math.cos(z * 0.3 + px);
+          tmp.copy(pavement).lerp(pavementWorn, clamp01(wear * 0.5 + 0.4));
+          c.lerp(tmp, t * 0.88);
+        }
       }
     }
 
@@ -519,7 +543,8 @@ function mergeStaticWorld(scene: THREE.Scene, root: THREE.Group): void {
       geos.forEach((g) => g.dispose());
     }
     const mesh = new THREE.Mesh(merged, mat);
-    mesh.castShadow = true;
+    // Unlit (glowing/transparent) materials must not cast shadows.
+    mesh.castShadow = !(mat instanceof THREE.MeshBasicMaterial) && !(mat as THREE.Material).transparent;
     mesh.receiveShadow = true;
     mergedGroup.add(mesh);
   });
@@ -544,9 +569,14 @@ function bakeSolids(parts: Parts, x: number, y: number, z: number, ry: number): 
 
 function buildApartment(mats: MapMaterials, x: number, z: number, ry: number): BuildingResult {
   const parts = new Parts();
+  const ladders: BuildingResult['ladders'] = [];
   const W = 14, D = 9, H1 = 3.0, H2 = 2.6, DOOR_W = 1.8;
   const wallMat = mats.concrete;
   const innerMat = mats.concreteDark;
+  const roofY = H1 + H2 + 0.15;
+
+  // Foundation plinth — grounds the building on its paved lot.
+  parts.box(mats.concreteDark, W + 0.8, 0.35, D + 0.8, 0, 0.05, 0);
 
   const frontHalf = (W - DOOR_W) / 2;
   // Ground floor walls with door gaps
@@ -556,8 +586,11 @@ function buildApartment(mats: MapMaterials, x: number, z: number, ry: number): B
   parts.solid(wallMat, frontHalf, H1, 0.25, (W - frontHalf) / 2, H1 / 2, -D / 2);
   parts.solid(wallMat, 0.25, H1, D, -W / 2, H1 / 2, 0);
   parts.solid(wallMat, 0.25, H1, D, W / 2, H1 / 2, 0);
+  // Lintels over both doorways + door frames
   parts.box(wallMat, DOOR_W, 0.5, 0.3, 0, H1 - 0.25, D / 2);
   parts.box(wallMat, DOOR_W, 0.5, 0.3, 0, H1 - 0.25, -D / 2);
+  parts.box(mats.metalDark, 0.1, H1 - 0.4, 0.3, -DOOR_W / 2 - 0.05, (H1 - 0.4) / 2 + 0.4, D / 2);
+  parts.box(mats.metalDark, 0.1, H1 - 0.4, 0.3, DOOR_W / 2 + 0.05, (H1 - 0.4) / 2 + 0.4, D / 2);
 
   // Interior columns
   parts.box(innerMat, 0.3, H1, 0.3, -3, H1 / 2, 0);
@@ -569,32 +602,81 @@ function buildApartment(mats: MapMaterials, x: number, z: number, ry: number): B
   parts.solid(wallMat, W, H2, 0.25, 0, H1 + H2 / 2, -D / 2);
   parts.solid(wallMat, 0.25, H2, D, -W / 2, H1 + H2 / 2, 0);
   parts.solid(wallMat, 0.25, H2, D, W / 2, H1 + H2 / 2, 0);
-  // Windows
-  for (let wx = -4.5; wx <= 4.5; wx += 3) {
-    parts.box(mats.glass, 1.4, 1.2, 0.1, wx, H1 + 1.4, D / 2 + 0.13);
-    parts.box(mats.glass, 1.4, 1.2, 0.1, wx, H1 + 1.4, -D / 2 - 0.13);
+
+  // Upper windows: mix of lit (glowing) and dark panes, each with a dark frame
+  // surround and a concrete sill. Front/back get 4, sides get 3. `n` is the
+  // wall's outward normal so the frame/sill sit on the correct side.
+  const putWindow = (wx: number, wy: number, wz: number, lit: boolean, n: [number, number, number]) => {
+    const pane = lit ? mats.windowGlow : mats.glass;
+    const nx = n[0], nz = n[2];
+    if (Math.abs(nz) > 0) {
+      parts.box(pane, 1.4, 1.2, 0.1, wx, wy, wz);
+      parts.box(mats.metalDark, 1.55, 1.35, 0.06, wx, wy, wz - nz * 0.02);
+      parts.box(mats.concrete, 1.65, 0.09, 0.22, wx, wy - 0.64, wz - nz * 0.05);
+    } else {
+      parts.box(pane, 0.1, 1.2, 1.3, wx, wy, wz);
+      parts.box(mats.metalDark, 0.06, 1.35, 1.45, wx - nx * 0.02, wy, wz);
+      parts.box(mats.concrete, 0.22, 0.09, 1.55, wx - nx * 0.05, wy - 0.64, wz);
+    }
+  };
+  for (let i = 0; i < 4; i++) {
+    const wx = -4.5 + i * 3;
+    putWindow(wx, H1 + 1.4, D / 2 + 0.13, i % 2 === 0, [0, 0, 1]);
+    putWindow(wx, H1 + 1.4, -D / 2 - 0.13, i % 2 === 1, [0, 0, -1]);
   }
-  for (let wz = -3; wz <= 3; wz += 3) {
-    parts.box(mats.glass, 1.3, 1.2, 0.1, -W / 2 - 0.13, H1 + 1.4, wz);
-    parts.box(mats.glass, 1.3, 1.2, 0.1, W / 2 + 0.13, H1 + 1.4, wz);
+  for (let i = 0; i < 3; i++) {
+    const wz = -3 + i * 3;
+    putWindow(-W / 2 - 0.13, H1 + 1.4, wz, i === 1, [-1, 0, 0]);
+    putWindow(W / 2 + 0.13, H1 + 1.4, wz, i === 1, [1, 0, 0]);
   }
+
+  // Roof slab + full parapet around the rooftop (provides rooftop cover).
   parts.solid(wallMat, W + 0.6, 0.3, D + 0.6, 0, H1 + H2, 0);
-  // Rooftop parapet + staircase + balconies
-  parts.solid(wallMat, W + 0.4, 0.5, 0.18, 0, H1 + H2 + 0.3 + 0.25, D / 2, 'building', true);
-  parts.solid(wallMat, 0.18, 0.5, D + 0.4, -W / 2, H1 + H2 + 0.3 + 0.25, 0, 'building', true);
-  parts.box(innerMat, 1.6, 0.4, 2.4, W / 2 - 1.2, H1 + 0.2, -1.5);
-  parts.box(innerMat, 1.6, 0.4, 2.4, W / 2 - 1.2, H1 + 0.6, -1.0);
+  const parapetY = roofY + 0.25;
+  parts.solid(wallMat, W + 0.4, 0.5, 0.18, 0, parapetY, D / 2, 'building', true);
+  parts.solid(wallMat, W + 0.4, 0.5, 0.18, 0, parapetY, -D / 2, 'building', true);
+  parts.solid(wallMat, 0.18, 0.5, D + 0.4, -W / 2, parapetY, 0, 'building', true);
+  parts.solid(wallMat, 0.18, 0.5, D + 0.4, W / 2, parapetY, 0, 'building', true);
+
+  // Rooftop clutter: AC unit, water tank, antenna, vent pipe.
+  parts.box(mats.metalDark, 1.7, 0.9, 1.2, 3, roofY + 0.45, -1);
+  parts.box(mats.rust, 1.7, 0.05, 0.05, 3, roofY + 0.75, -1.4);
+  parts.box(mats.rust, 1.7, 0.05, 0.05, 3, roofY + 0.5, -1.4);
+  parts.cyl(mats.concreteDark, 0.7, 0.7, 1.4, 10, -3.5, roofY + 0.7, 1.6);
+  parts.cyl(mats.metalDark, 0.03, 0.03, 3.4, 6, 0, roofY + 1.7, 0);
+  parts.cyl(mats.metalDark, 0.12, 0.12, 0.6, 8, 1.5, roofY + 0.3, 2.3);
+
+  // Exterior fire-escape ladder to the roof (sniper perch).
+  parts.box(mats.metalDark, 0.08, H1 + H2, 0.08, 0, (H1 + H2) / 2, -D / 2 - 0.55);
+  parts.box(mats.metalDark, 0.08, H1 + H2, 0.08, 0.4, (H1 + H2) / 2, -D / 2 - 0.55);
+  for (let ly = 0.4; ly < H1 + H2 - 0.2; ly += 0.45) {
+    parts.box(mats.metalDark, 0.6, 0.06, 0.06, 0.2, ly, -D / 2 - 0.55);
+  }
+  ladders.push({ x: 0, z: -D / 2 - 0.7, topY: H1 + H2 + 0.65, baseY: 0 });
+
+  // Balconies
   for (let bx = -4.5; bx <= 4.5; bx += 9) {
     parts.solid(wallMat, 2.4, 0.14, 1.4, bx, H1 + 0.05, D / 2 + 0.8, 'building', true);
     parts.box(wallMat, 0.1, 1.0, 1.4, bx - 1.2, H1 + 0.55, D / 2 + 0.8);
     parts.box(wallMat, 0.1, 1.0, 1.4, bx + 1.2, H1 + 0.55, D / 2 + 0.8);
     parts.box(mats.metal, 2.4, 0.06, 0.05, bx, H1 + 0.95, D / 2 + 0.8);
+    parts.box(mats.metal, 0.06, 0.06, 0.5, bx - 1.2, H1 + 0.8, D / 2 + 1.45);
+    parts.box(mats.metal, 0.06, 0.06, 0.5, bx + 1.2, H1 + 0.8, D / 2 + 1.45);
+    // Balcony glass door
+    parts.box(mats.glass, 1.0, 1.6, 0.06, bx, H1 + 0.9, D / 2 + 0.1);
   }
 
   const group = parts.build();
   group.position.set(x, 0.15, z);
   group.rotation.y = ry;
-  return { group, colliders: bakeSolids(parts, x, 0.15, z, ry), ladders: [] };
+  const c = Math.cos(ry), s = Math.sin(ry);
+  const worldLadders = ladders.map((l) => ({
+    x: x + l.x * c - l.z * s,
+    z: z + l.x * s + l.z * c,
+    topY: 0.15 + l.topY,
+    baseY: 0.15 + l.baseY
+  }));
+  return { group, colliders: bakeSolids(parts, x, 0.15, z, ry), ladders: worldLadders };
 }
 
 function buildHangar(mats: MapMaterials, x: number, z: number, ry: number): BuildingResult {
@@ -612,6 +694,16 @@ function buildHangar(mats: MapMaterials, x: number, z: number, ry: number): Buil
   for (let i = -W / 2 + 2; i < W / 2; i += 3.2) {
     parts.box(mats.metalDark, 0.24, 0.5, D, i, H - 0.1, 0);
   }
+  // Office windows (lit) beside the rolling door + a sign strip.
+  parts.box(mats.windowGlow, 2.4, 1.0, 0.12, -(W - 10) / 2 - 1.4, H - 2.4, D / 2 + 0.2);
+  parts.box(mats.windowGlow, 2.4, 1.0, 0.12, (W - 10) / 2 + 1.4, H - 2.4, D / 2 + 0.2);
+  parts.box(mats.metalDark, 5.5, 0.5, 0.12, 0, H - 0.9, D / 2 + 0.2);
+  parts.box(mats.windowGlow, 4.5, 0.26, 0.1, 0, H - 0.9, D / 2 + 0.28);
+  // Roof skylights + vents.
+  parts.box(mats.glass, 12, 0.05, 1.2, 0, H + 0.16, 0);
+  parts.box(mats.glass, 12, 0.05, 1.2, 0, H + 0.16, -6);
+  parts.box(mats.metalDark, 1.1, 0.5, 1.1, -6, H + 0.28, 5);
+  parts.box(mats.metalDark, 1.1, 0.5, 1.1, 6, H + 0.28, -5);
   for (let i = -3; i <= 3; i += 3) {
     parts.box(mats.metal, 3.4, 0.12, 1.6, i, 1.2, -6);
     parts.box(mats.metal, 3.4, 0.12, 1.6, i, 2.0, -6);
@@ -672,6 +764,14 @@ function buildGasStation(mats: MapMaterials, x: number, z: number, ry: number): 
 
   parts.solid(mats.concreteDark, W, 0.4, D, 0, 4.6, 0);
   parts.box(mats.metal, W, 0.3, 0.5, 0, 4.3, D / 2);
+  // Glowing sign band + price board on the canopy front.
+  parts.box(mats.metalDark, 8.5, 1.1, 0.14, 0, 3.6, D / 2 + 0.06);
+  parts.box(mats.windowGlow, 7.8, 0.55, 0.1, 0, 3.6, D / 2 + 0.16);
+  parts.box(mats.metalDark, 2.4, 1.5, 0.1, 3.8, 2.0, D / 2 + 0.08);
+  parts.box(mats.windowGlow, 2.0, 1.1, 0.1, 3.8, 2.0, D / 2 + 0.15);
+  // Canopy edge trim.
+  parts.box(mats.metal, W + 0.2, 0.16, 0.2, 0, 4.42, D / 2 + 0.1);
+  parts.box(mats.metal, W + 0.2, 0.16, 0.2, 0, 4.42, -D / 2 - 0.1);
   [[-W / 2 + 0.8, -D / 2 + 0.8], [W / 2 - 0.8, -D / 2 + 0.8], [-W / 2 + 0.8, D / 2 - 0.8], [W / 2 - 0.8, D / 2 - 0.8]].forEach(([cx, cz]) => {
     parts.solid(mats.metal, 0.5, 4.6, 0.5, cx, 2.3, cz);
   });
@@ -680,11 +780,14 @@ function buildGasStation(mats: MapMaterials, x: number, z: number, ry: number): 
     parts.box(mats.metalDark, 0.7, 1.5, 1.0, px, 1.2, 1.5);
     parts.box(mats.glassWarm, 0.5, 0.5, 0.1, px, 1.3, 1.02);
   });
+  // Shop: lit interior glow through the front glass.
   parts.solid(mats.concrete, 7, 3.2, 5, 0, 1.6, -3.4);
-  parts.box(mats.glass, 5.4, 1.6, 0.1, 0, 1.6, -0.95);
+  parts.box(mats.windowGlow, 5.4, 1.5, 0.1, 0, 1.6, -0.95);
   parts.box(mats.metal, 0.2, 1.6, 0.14, -2.7, 1.6, -0.95);
   parts.box(mats.metal, 0.2, 1.6, 0.14, 2.7, 1.6, -0.95);
   parts.box(mats.metal, 5.8, 0.5, 0.3, 0, 0.4, -0.95);
+  // Shop sign strip above the glass.
+  parts.box(mats.windowGlow, 5.6, 0.35, 0.1, 0, 2.55, -0.95);
   parts.solid(mats.concreteDark, 7.4, 0.3, 5.4, 0, 3.4, -3.4);
   // Explosive fuel tanks
   [-2, 0, 2].forEach((tx) => {
@@ -720,6 +823,7 @@ function buildWatchtower(mats: MapMaterials, x: number, z: number): BuildingResu
     parts.box(mats.rust, 0.9, 0.07, 0.07, 0, ly, 2.5);
   }
   parts.cyl(mats.glassWarm, 0.28, 0.34, 0.4, 10, 0, H + 0.15, 2.6, Math.PI / 2 - 0.35, 0, 0);
+  parts.cyl(mats.windowGlow, 0.12, 0.12, 0.06, 10, 0, H + 0.12, 2.78, Math.PI / 2 - 0.35, 0, 0);
   ladders.push({ x, z: z + 2.45, topY: gy + H, baseY: gy });
 
   const group = parts.build();
@@ -731,12 +835,22 @@ function buildBunker(mats: MapMaterials, x: number, z: number, ry: number): Buil
   const parts = new Parts();
   parts.solid(mats.dirt, 16, 2.6, 13, 0, 1.3, 0);
   parts.solid(mats.concrete, 7, 2.6, 0.6, 0, 1.3, 4.4);
+  // Bunker window: dark glass + a lit slit so it reads as occupied at dusk.
   parts.box(mats.glass, 2.2, 2.0, 0.4, 0, 1.0, 4.4);
+  parts.box(mats.windowGlow, 1.6, 0.28, 0.12, 0, 1.25, 4.75);
+  parts.box(mats.metalDark, 0.24, 2.2, 0.3, -1.15, 1.0, 4.5);
+  parts.box(mats.metalDark, 0.24, 2.2, 0.3, 1.15, 1.0, 4.5);
   parts.box(mats.metal, 0.4, 1.6, 0.4, -4, 0.8, 1);
   parts.box(mats.metal, 0.4, 1.6, 0.4, 4, 0.8, 1);
   parts.box(mats.concreteDark, 3.4, 0.3, 0.3, 0, 0.2, 4.6);
+  // Radio antenna + vent mast on the mound.
+  parts.cyl(mats.metalDark, 0.03, 0.03, 2.6, 6, -5, 2.2, -2.5);
+  parts.cyl(mats.rust, 0.18, 0.24, 0.7, 8, 5.2, 2.15, -1.8);
   for (let a = -1; a <= 1; a += 0.5) {
     parts.box(mats.sand, 1.6, 0.7, 0.7, Math.sin(a) * 6, 0.35, 5.5 + Math.cos(a) * 2, 0, a, 0);
+  }
+  for (let a = -0.5; a <= 0.5; a += 0.5) {
+    parts.box(mats.sand, 1.8, 0.6, 0.7, Math.sin(a) * 5, 0.3, 6.4 + Math.cos(a) * 1.5, 0, a * 0.6, 0);
   }
 
   const group = parts.build();
@@ -761,10 +875,22 @@ function buildContainerYard(mats: MapMaterials, x: number, z: number, ry: number
   const place = (cx: number, cz: number, rot: number, stack: number) => {
     for (let s = 0; s < stack; s++) {
       const c = paintFor(colors[Math.floor(rng() * colors.length)]);
-      parts.solid(c, 2.6, 2.6, 6.1, cx, 1.3 + s * 2.6, cz, 'crate', false, false, rot);
+      const y = 1.3 + s * 2.6;
+      parts.solid(c, 2.6, 2.6, 6.1, cx, y, cz, 'crate', false, false, rot);
       const ox = Math.sin(rot) * 1.3, oz = Math.cos(rot) * 1.3;
-      parts.box(c, 0.06, 2.2, 0.06, cx + ox, 1.3 + s * 2.6, cz + oz, 0, rot, 0);
-      parts.box(c, 0.06, 2.2, 0.06, cx - ox, 1.3 + s * 2.6, cz - oz, 0, rot, 0);
+      // Side corrugation ribs.
+      parts.box(c, 0.06, 2.2, 0.06, cx + ox, y, cz + oz, 0, rot, 0);
+      parts.box(c, 0.06, 2.2, 0.06, cx - ox, y, cz - oz, 0, rot, 0);
+      // Door panels at both ends + lock rods.
+      parts.box(mats.metalDark, 2.7, 2.7, 0.1, cx, y, cz + 3.05, 0, rot, 0);
+      parts.box(mats.metalDark, 2.7, 2.7, 0.1, cx, y, cz - 3.05, 0, rot, 0);
+      parts.box(mats.rust, 0.1, 2.5, 0.14, cx - 0.9, y, cz + 3.05, 0, rot, 0);
+      parts.box(mats.rust, 0.1, 2.5, 0.14, cx + 0.9, y, cz + 3.05, 0, rot, 0);
+      // Corner castings.
+      [[-1.3, 3.0], [1.3, 3.0], [-1.3, -3.0], [1.3, -3.0]].forEach(([ax, az]) => {
+        parts.box(mats.metalDark, 0.24, 0.24, 0.24, cx + ax, y + 1.2, cz + az, 0, rot, 0);
+        parts.box(mats.metalDark, 0.24, 0.24, 0.24, cx + ax, y - 1.2, cz + az, 0, rot, 0);
+      });
     }
   };
 
@@ -847,6 +973,44 @@ function buildDestroyedVehicles(mats: MapMaterials, hFn: (x: number, z: number) 
   addCar(-52, 20, 0.9, false);
 
   return { group, colliders };
+}
+
+// ------------------------------------------------------------
+// Street lamps — thin poles with glowing heads along both roads. Added to the
+// static group so they merge into the shared metal/glow materials (zero extra
+// draw calls). Decorative only (no colliders).
+// ------------------------------------------------------------
+function buildStreetLamps(mats: MapMaterials, parent: THREE.Group) {
+  const lamp = (x: number, z: number, axis: 'x' | 'z', dir: 1 | -1) => {
+    const h = terrainHeight(x, z);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.13, 6.4, 6), mats.metalDark);
+    pole.position.set(x, h + 3.2, z);
+    parent.add(pole);
+
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.6, 6), mats.metalDark);
+    if (axis === 'x') arm.rotation.z = Math.PI / 2;
+    else arm.rotation.x = Math.PI / 2;
+    arm.position.set(x + (axis === 'x' ? dir * 0.75 : 0), h + 6.15, z + (axis === 'z' ? dir * 0.75 : 0));
+    parent.add(arm);
+
+    const head = new THREE.Mesh(
+      new THREE.BoxGeometry(axis === 'x' ? 0.6 : 0.42, 0.15, axis === 'z' ? 0.6 : 0.42),
+      mats.windowGlow
+    );
+    head.position.set(x + (axis === 'x' ? dir * 1.45 : 0), h + 6.0, z + (axis === 'z' ? dir * 1.45 : 0));
+    parent.add(head);
+  };
+
+  // Along the north-south road (x = ROAD_A_X), alternating sides.
+  for (let z = -80; z <= 80; z += 16) {
+    lamp(ROAD_A_X - 5.4, z, 'x', 1);
+    lamp(ROAD_A_X + 5.4, z + 8, 'x', -1);
+  }
+  // Along the east-west road (z = ROAD_B_Z), alternating sides.
+  for (let x = -80; x <= 80; x += 16) {
+    lamp(x, ROAD_B_Z - 5.4, 'z', 1);
+    lamp(x + 8, ROAD_B_Z + 5.4, 'z', -1);
+  }
 }
 
 // ------------------------------------------------------------
@@ -1418,6 +1582,9 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
   const vehicles = buildDestroyedVehicles(mats, getHeightAt);
   staticWorld.add(vehicles.group);
   obstacles.push(...vehicles.colliders);
+
+  // Street lamps (warzone only) — merged with the static world.
+  if (mapId === 'warzone') buildStreetLamps(mats, staticWorld);
 
   // Collapse all static geometry into one mesh per material (major draw-call
   // win — colliders are Box3 copies, so gameplay is unaffected).
