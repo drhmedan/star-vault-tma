@@ -150,6 +150,7 @@ interface PlayerState {
   kills: number;
   shotsFired: number; shotsHit: number; headshots: number; damageDealt: number;
   alive: boolean;
+  camHeight: number;
 }
 
 interface BotState {
@@ -204,6 +205,8 @@ interface EngineApi {
   toggleProne: () => void;
   jump: () => void;
   toggleView: () => void;
+  nudgeCamHeight: (dir: 1 | -1) => void;
+  resetCamHeight: () => void;
   cookGrenade: (on: boolean) => void;
   cycleNade: () => void;
   useMedkit: () => void;
@@ -244,7 +247,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     lastFire: 0,
     kills: 0,
     shotsFired: 0, shotsHit: 0, headshots: 0, damageDealt: 0,
-    alive: true
+    alive: true,
+    camHeight: 0
   });
 
   const bRef = useRef<BotState>({
@@ -416,6 +420,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     let lastZoneDmg = 0;
     let lastHudSync = 0;
     let cameraShake = 0;
+    // View-mode blend: 0 = fully first-person, 1 = fully third-person. Damped
+    // toward the selected mode every frame so toggling is a smooth cinematic
+    // dolly instead of an instant snap.
+    let viewBlend = viewModeRef.current === 'fpp' ? 0 : 1;
+    // User-adjustable camera height (smoothed toward camHeightTarget).
+    let camHeightTarget = p.camHeight;
     let flashLevel = 0;
     let hitmarkerT = 0;
     let cookFuse = 0;
@@ -1006,6 +1016,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       else if (k === '2') engineRef.current?.switchSlot('secondary');
       else if (k === '3') engineRef.current?.switchSlot('sidearm');
       else if (k === 'h') engineRef.current?.useMedkit();
+      else if (k === 'pageup') { e.preventDefault(); engineRef.current?.nudgeCamHeight(1); }
+      else if (k === 'pagedown') { e.preventDefault(); engineRef.current?.nudgeCamHeight(-1); }
+      else if (k === 'home') { e.preventDefault(); engineRef.current?.resetCamHeight(); }
       else if (k === ' ') { e.preventDefault(); engineRef.current?.jump(); }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -1094,6 +1107,14 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       },
       toggleView: () => {
         viewModeRef.current = viewModeRef.current === 'tpp' ? 'fpp' : 'tpp';
+        sound.playClick();
+      },
+      nudgeCamHeight: (dir) => {
+        camHeightTarget = THREE.MathUtils.clamp(camHeightTarget + dir * 0.15, -0.7, 1.2);
+        sound.playClick();
+      },
+      resetCamHeight: () => {
+        camHeightTarget = 0;
         sound.playClick();
       },
       cookGrenade: (on) => {
@@ -1548,12 +1569,22 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
       // ---- Camera ----
       const viewMode = viewModeRef.current;
+      // Ease the view blend toward the selected mode: 0 = first-person,
+      // 1 = third-person. This turns the toggle into a smooth cinematic dolly.
+      viewBlend = THREE.MathUtils.damp(viewBlend, viewMode === 'fpp' ? 0 : 1, 7, dt);
+      const tpp = THREE.MathUtils.smoothstep(viewBlend, 0, 1);
+
+      // Ease the user's camera-height preference in/out for a comfortable feel.
+      camHeightTarget = THREE.MathUtils.clamp(camHeightTarget, -0.7, 1.2);
+      p.camHeight = THREE.MathUtils.damp(p.camHeight, camHeightTarget, 6, dt);
+      const camH = p.camHeight;
+
       const crouchEye = p.crouched ? 1.15 : 1.65;
       const eyeH = p.prone ? 0.42 : crouchEye + (sliding ? -0.25 : 0);
       // FPP aim = per-weapon ADS (sniper zooms to 15°). TPP aim = shoulder zoom.
-      const targetFov = aimRef.current
-        ? (viewMode === 'fpp' ? (currentWeapon()?.def.adsFov ?? 45) : 55)
-        : viewMode === 'fpp' ? 75 : 70;
+      const fovFpp = aimRef.current ? (currentWeapon()?.def.adsFov ?? 45) : 75;
+      const fovTpp = aimRef.current ? 55 : 70;
+      const targetFov = THREE.MathUtils.lerp(fovFpp, fovTpp, tpp);
       camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, dt * 10);
       camera.updateProjectionMatrix();
 
@@ -1561,10 +1592,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const bobY = moving && p.grounded ? Math.abs(Math.sin(p.bobPhase)) * bobAmp : 0;
       const bobX = moving && p.grounded ? Math.sin(p.bobPhase * 0.5) * bobAmp * 0.6 : 0;
 
-      if (viewMode === 'fpp') {
-        playerSoldier.root.visible = false;
-        if (viewmodel) {
-          viewmodel.group.visible = true;
+      // First-person viewmodel is shown only while mostly first-person; the
+      // soldier body only while mostly third-person.
+      if (viewmodel) {
+        viewmodel.group.visible = tpp < 0.7;
+        if (viewmodel.group.visible) {
           const vm = viewmodel.group;
           const adsBlend2 = aimRef.current ? 1 : 0;
           const basePos = new THREE.Vector3(0.26, -0.22, -0.5);
@@ -1579,54 +1611,68 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           viewmodel.muzzleLight.intensity = muzzleT > 0 ? 5 : 0;
           (viewmodel.muzzle.children[0] as THREE.Object3D).visible = muzzleT > 0;
         }
-        camera.position.set(p.pos.x + p.lean * 0.28, p.pos.y + eyeH + bobY, p.pos.z);
-        camera.rotation.set(p.pitch, p.yaw, p.lean * 0.12);
-      } else {
-        playerSoldier.root.visible = true;
-        if (viewmodel) viewmodel.group.visible = false;
-        const camDist = 3.4;
-        const camPos = new THREE.Vector3(
-          p.pos.x + Math.sin(p.yaw) * camDist * Math.cos(p.pitch) * 0.9,
-          p.pos.y + 1.7 + Math.sin(p.pitch) * camDist * 0.8 + bobY,
-          p.pos.z + Math.cos(p.yaw) * camDist * Math.cos(p.pitch) * 0.9
-        );
-        camPos.x += Math.cos(p.yaw) * p.lean * 0.6;
-        camPos.z += -Math.sin(p.yaw) * p.lean * 0.6;
-
-        // Never let the orbit camera sink below the terrain when looking down.
-        camPos.y = Math.max(camPos.y, getHeightAt(camPos.x, camPos.z) + 0.35);
-
-        // Camera collision: pull the camera in when a wall stands between the
-        // player's chest and the desired orbit point (prevents seeing through
-        // buildings and popping geometry).
-        const chest = new THREE.Vector3(p.pos.x, p.pos.y + 1.5, p.pos.z);
-        const toCam = camPos.clone().sub(chest);
-        const camLen = toCam.length();
-        if (camLen > 1e-4) {
-          const camDir = toCam.normalize();
-          let tMin = camLen;
-          for (const o of obstacles) {
-            if (!o.blocksBullets) continue;
-            const t = rayHitsAABB(chest, camDir, o.box);
-            if (t !== null && t >= 0 && t < tMin) tMin = t;
-          }
-          if (tMin < camLen - 0.2) {
-            camPos.copy(chest).addScaledVector(camDir, Math.max(0.3, tMin - 0.25));
-            camPos.y = Math.max(camPos.y, getHeightAt(camPos.x, camPos.z) + 0.3);
-          }
-        }
-
-        camera.position.lerp(camPos, dt * 14);
-        const look = new THREE.Vector3(
-          p.pos.x - Math.sin(p.yaw) * 30,
-          p.pos.y + 1.5 + Math.sin(p.pitch) * 30,
-          p.pos.z - Math.cos(p.yaw) * 30
-        );
-        // Keep the look-at point above ground so the view never dips under it.
-        look.y = Math.max(look.y, getHeightAt(look.x, look.z) + 0.4);
-        camera.lookAt(look);
-        camera.rotateZ(-p.lean * 0.06);
       }
+      playerSoldier.root.visible = tpp > 0.35;
+
+      // ---- First-person pose (eye at head height + user camera height) ----
+      const fppPos = new THREE.Vector3(
+        p.pos.x + p.lean * 0.28,
+        p.pos.y + eyeH + bobY + camH,
+        p.pos.z
+      );
+      const qFpp = new THREE.Quaternion().setFromEuler(new THREE.Euler(p.pitch, p.yaw, p.lean * 0.12, 'YXZ'));
+
+      // ---- Third-person orbit pose (shoulder camera, collision-aware) ----
+      const camDist = 3.4;
+      const tppPos = new THREE.Vector3(
+        p.pos.x + Math.sin(p.yaw) * camDist * Math.cos(p.pitch) * 0.9,
+        p.pos.y + 1.7 + camH * 1.4 + Math.sin(p.pitch) * camDist * 0.8 + bobY,
+        p.pos.z + Math.cos(p.yaw) * camDist * Math.cos(p.pitch) * 0.9
+      );
+      tppPos.x += Math.cos(p.yaw) * p.lean * 0.6;
+      tppPos.z += -Math.sin(p.yaw) * p.lean * 0.6;
+
+      // Never let the orbit camera sink below the terrain when looking down.
+      tppPos.y = Math.max(tppPos.y, getHeightAt(tppPos.x, tppPos.z) + 0.35);
+
+      // Camera collision: pull the camera in when a wall stands between the
+      // player's chest and the desired orbit point (prevents seeing through
+      // buildings and popping geometry).
+      const chest = new THREE.Vector3(p.pos.x, p.pos.y + 1.5, p.pos.z);
+      const toCam = tppPos.clone().sub(chest);
+      const camLen = toCam.length();
+      if (camLen > 1e-4) {
+        const camDir = toCam.normalize();
+        let tMin = camLen;
+        for (const o of obstacles) {
+          if (!o.blocksBullets) continue;
+          const t = rayHitsAABB(chest, camDir, o.box);
+          if (t !== null && t >= 0 && t < tMin) tMin = t;
+        }
+        if (tMin < camLen - 0.2) {
+          tppPos.copy(chest).addScaledVector(camDir, Math.max(0.3, tMin - 0.25));
+          tppPos.y = Math.max(tppPos.y, getHeightAt(tppPos.x, tppPos.z) + 0.3);
+        }
+      }
+
+      // Third-person look-at target, raised with the user's camera height and
+      // clamped above ground so the view never dips under it.
+      const look = new THREE.Vector3(
+        p.pos.x - Math.sin(p.yaw) * 30,
+        p.pos.y + 1.5 + camH + Math.sin(p.pitch) * 30,
+        p.pos.z - Math.cos(p.yaw) * 30
+      );
+      look.y = Math.max(look.y, getHeightAt(look.x, look.z) + 0.4);
+
+      // Build the third-person orientation from the look target (plus lean roll).
+      camera.position.copy(tppPos);
+      camera.lookAt(look);
+      camera.rotateZ(-p.lean * 0.06);
+      const qTpp = camera.quaternion.clone();
+
+      // Blend the two poses: tpp=0 -> first-person, tpp=1 -> third-person.
+      camera.position.copy(fppPos).lerp(tppPos, tpp);
+      camera.quaternion.copy(qFpp).slerp(qTpp, tpp);
 
       if (cameraShake > 0.005) {
         camera.position.x += (Math.random() - 0.5) * cameraShake;
@@ -2071,6 +2117,15 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
                   🔥
                 </button>
               </div>
+              {/* Camera height: raise / lower / reset (smooth, user preference) */}
+              <div className="absolute bottom-64 left-5 z-30 flex flex-col gap-1.5 pointer-events-auto">
+                <button onTouchStart={() => engineRef.current?.nudgeCamHeight(1)} aria-label="رفع الكاميرا"
+                  className="w-9 h-9 rounded-full bg-white/10 border border-white/20 text-white text-sm font-bold backdrop-blur-sm active:scale-90 flex items-center justify-center">▲</button>
+                <button onTouchStart={() => engineRef.current?.nudgeCamHeight(-1)} aria-label="خفض الكاميرا"
+                  className="w-9 h-9 rounded-full bg-white/10 border border-white/20 text-white text-sm font-bold backdrop-blur-sm active:scale-90 flex items-center justify-center">▼</button>
+                <button onTouchStart={() => engineRef.current?.resetCamHeight()} aria-label="إعادة ضبط الكاميرا"
+                  className="w-9 h-9 rounded-full bg-white/10 border border-white/20 text-white text-[10px] font-bold backdrop-blur-sm active:scale-90 flex items-center justify-center">⟲</button>
+              </div>
               <div className="absolute bottom-20 left-5 z-30 flex items-center gap-1.5 pointer-events-auto">
                 <button onClick={() => setAutoFire(!autoFire)} className={`px-2 py-1 rounded-full text-[9px] font-bold border ${autoFire ? 'bg-emerald-500/30 border-emerald-400 text-emerald-200' : 'bg-black/40 border-white/15 text-slate-400'}`}>
                   {autoFire ? 'تلقائي ✓' : 'تلقائي'}
@@ -2091,6 +2146,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
               <span><b className="text-white">G</b> قنبلة</span>
               <span><b className="text-white">V</b> منظور</span>
               <span><b className="text-white">مسافة</b> قفز</span>
+              <span><b className="text-white">PgUp/PgDn</b> ارتفاع الكاميرا</span>
+              <span><b className="text-white">Home</b> إعادة الكاميرا</span>
             </div>
           )}
         </div>
