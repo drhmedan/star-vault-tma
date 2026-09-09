@@ -564,10 +564,18 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     }
 
     function shootDir(): THREE.Vector3 {
-      const dir = new THREE.Vector3();
-      if (viewModeRef.current === 'fpp') camera.getWorldDirection(dir);
-      else dir.set(-Math.sin(p.yaw) * Math.cos(p.pitch), Math.sin(p.pitch), -Math.cos(p.yaw) * Math.cos(p.pitch));
-      return dir;
+      // The camera always looks along the aim direction in both view modes
+      // (the TPP camera is aimed down the crosshair line), so the bullets fly
+      // exactly where the crosshair points.
+      return camera.getWorldDirection(new THREE.Vector3());
+    }
+
+    function shotOrigin(): THREE.Vector3 {
+      // First-person: from the viewmodel muzzle. Third-person: from the camera
+      // so the bullet passes precisely through the crosshair; the shooter's own
+      // soldier is never part of the hit test, so this cannot self-hit.
+      if (viewModeRef.current === 'fpp') return muzzleWorld();
+      return camera.position.clone();
     }
 
     function triggerExplosion(pos: THREE.Vector3, radius: number) {
@@ -652,6 +660,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       }
 
       const muzzlePos = muzzleWorld();
+      const origin = shotOrigin();
       for (let i = 0; i < w.def.pellets; i++) {
         const jitter = new THREE.Vector3(
           (Math.random() - 0.5) * 2 * spread,
@@ -666,7 +675,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           const bm = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 5), new THREE.MeshBasicMaterial({ color: 0xffd54a }));
           bm.rotation.x = Math.PI / 2;
           bullet.add(bm);
-          bullet.position.copy(muzzlePos);
+          bullet.position.copy(origin);
           bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir);
           scene.add(bullet);
           projectiles.push({
@@ -677,7 +686,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           continue;
         }
 
-        const hit = traceShot(muzzlePos, dir, w.def.range, 'player');
+        const hit = traceShot(origin, dir, w.def.range, 'player');
         const line = acquireTracer(w.def.tracerColor);
         line.geometry.setFromPoints([muzzlePos.clone(), hit.point.clone()]);
         activeTracers.push({ line, ttl: 0.07 });
@@ -1110,7 +1119,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         sound.playClick();
       },
       nudgeCamHeight: (dir) => {
-        camHeightTarget = THREE.MathUtils.clamp(camHeightTarget + dir * 0.15, -0.7, 1.2);
+        camHeightTarget = THREE.MathUtils.clamp(camHeightTarget + dir * 0.08, -0.35, 0.35);
         sound.playClick();
       },
       resetCamHeight: () => {
@@ -1575,7 +1584,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const tpp = THREE.MathUtils.smoothstep(viewBlend, 0, 1);
 
       // Ease the user's camera-height preference in/out for a comfortable feel.
-      camHeightTarget = THREE.MathUtils.clamp(camHeightTarget, -0.7, 1.2);
+      camHeightTarget = THREE.MathUtils.clamp(camHeightTarget, -0.35, 0.35);
       p.camHeight = THREE.MathUtils.damp(p.camHeight, camHeightTarget, 6, dt);
       const camH = p.camHeight;
 
@@ -1595,7 +1604,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       // First-person viewmodel is shown only while mostly first-person; the
       // soldier body only while mostly third-person.
       if (viewmodel) {
-        viewmodel.group.visible = tpp < 0.7;
+        viewmodel.group.visible = tpp < 0.55;
         if (viewmodel.group.visible) {
           const vm = viewmodel.group;
           const adsBlend2 = aimRef.current ? 1 : 0;
@@ -1612,33 +1621,37 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           (viewmodel.muzzle.children[0] as THREE.Object3D).visible = muzzleT > 0;
         }
       }
-      playerSoldier.root.visible = tpp > 0.35;
+      playerSoldier.root.visible = tpp > 0.45;
 
-      // ---- First-person pose (eye at head height + user camera height) ----
+      // ---- First-person pose (eye at head height) ----
       const fppPos = new THREE.Vector3(
         p.pos.x + p.lean * 0.28,
-        p.pos.y + eyeH + bobY + camH,
+        p.pos.y + eyeH + bobY,
         p.pos.z
       );
       const qFpp = new THREE.Quaternion().setFromEuler(new THREE.Euler(p.pitch, p.yaw, p.lean * 0.12, 'YXZ'));
 
-      // ---- Third-person orbit pose (shoulder camera, collision-aware) ----
+      // ---- Third-person over-the-shoulder pose ----
+      // The camera sits up and to the right of the player's head and looks
+      // straight along the aim direction, so the player is framed to the lower
+      // left of the screen while the crosshair lands exactly on the aim point
+      // (instead of sitting on the player's back).
+      const cosY = Math.cos(p.yaw), sinY = Math.sin(p.yaw);
       const camDist = 3.4;
+      const shoulder = 0.55 + p.lean * 0.5;
       const tppPos = new THREE.Vector3(
-        p.pos.x + Math.sin(p.yaw) * camDist * Math.cos(p.pitch) * 0.9,
-        p.pos.y + 1.7 + camH * 1.4 + Math.sin(p.pitch) * camDist * 0.8 + bobY,
-        p.pos.z + Math.cos(p.yaw) * camDist * Math.cos(p.pitch) * 0.9
+        p.pos.x + sinY * camDist + cosY * shoulder,
+        p.pos.y + 1.75 + camH + bobY,
+        p.pos.z + cosY * camDist - sinY * shoulder
       );
-      tppPos.x += Math.cos(p.yaw) * p.lean * 0.6;
-      tppPos.z += -Math.sin(p.yaw) * p.lean * 0.6;
 
       // Never let the orbit camera sink below the terrain when looking down.
       tppPos.y = Math.max(tppPos.y, getHeightAt(tppPos.x, tppPos.z) + 0.35);
 
       // Camera collision: pull the camera in when a wall stands between the
-      // player's chest and the desired orbit point (prevents seeing through
+      // player's head and the desired orbit point (prevents seeing through
       // buildings and popping geometry).
-      const chest = new THREE.Vector3(p.pos.x, p.pos.y + 1.5, p.pos.z);
+      const chest = new THREE.Vector3(p.pos.x, p.pos.y + 1.6, p.pos.z);
       const toCam = tppPos.clone().sub(chest);
       const camLen = toCam.length();
       if (camLen > 1e-4) {
@@ -1655,16 +1668,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         }
       }
 
-      // Third-person look-at target, raised with the user's camera height and
-      // clamped above ground so the view never dips under it.
-      const look = new THREE.Vector3(
-        p.pos.x - Math.sin(p.yaw) * 30,
-        p.pos.y + 1.5 + camH + Math.sin(p.pitch) * 30,
-        p.pos.z - Math.cos(p.yaw) * 30
+      // Aim direction shared by the camera and the bullets (crosshair-aligned).
+      const fwd = new THREE.Vector3(
+        -sinY * Math.cos(p.pitch),
+        Math.sin(p.pitch),
+        -cosY * Math.cos(p.pitch)
       );
-      look.y = Math.max(look.y, getHeightAt(look.x, look.z) + 0.4);
-
-      // Build the third-person orientation from the look target (plus lean roll).
+      const look = tppPos.clone().addScaledVector(fwd, 60);
       camera.position.copy(tppPos);
       camera.lookAt(look);
       camera.rotateZ(-p.lean * 0.06);
