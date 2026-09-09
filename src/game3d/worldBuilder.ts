@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { SoldierMesh, SoldierRig, WeaponType } from './types3d';
 
 // ============================================================
@@ -42,21 +43,59 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
 
   const zoneMat: ZoneMaterials = { head: [], body: [], limb: [] };
 
+  // Geometry-merge buffers (see add() below).
+  interface MergeBucket { mat: THREE.Material; meshes: THREE.Mesh[]; }
+  const mergeBuckets = new Map<THREE.Object3D, Map<THREE.Material, MergeBucket>>();
+  const seenMats = new Set<THREE.MeshStandardMaterial>();
+
+  const finalize = (parent: THREE.Object3D) => {
+    const byMat = mergeBuckets.get(parent);
+    if (!byMat) return;
+    byMat.forEach((bucket) => {
+      const geos = bucket.meshes.map((m) => {
+        m.updateMatrix();
+        const g = m.geometry.clone();
+        g.applyMatrix4(m.matrix);
+        return g;
+      });
+      let merged: THREE.BufferGeometry;
+      if (geos.length === 1) {
+        merged = geos[0];
+      } else {
+        merged = mergeGeometries(geos, false) ?? new THREE.BufferGeometry();
+        geos.forEach((g) => g.dispose());
+      }
+      bucket.meshes.forEach((m) => m.geometry.dispose());
+      const mesh = new THREE.Mesh(merged, bucket.mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      parent.add(mesh);
+    });
+    mergeBuckets.delete(parent);
+  };
+
   // ---- helpers ----
   const box = (w: number, h: number, d: number, mat: THREE.Material) =>
     new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   const cyl = (rt: number, rb: number, h: number, seg: number, mat: THREE.Material) =>
     new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
 
-  const add = (mesh: THREE.Mesh, parent: THREE.Object3D, zone: keyof ZoneMaterials, shadow = true) => {
-    if (shadow) {
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+  const add = (mesh: THREE.Mesh, parent: THREE.Object3D, zone: keyof ZoneMaterials, _shadow = true) => {
+    // Buffer meshes per (parent, material) instead of adding them directly.
+    // At finalize time each bucket collapses into a single merged mesh, which
+    // keeps the animated rig hierarchy intact while cutting the per-soldier
+    // draw-call count from ~90 down to ~40. Every soldier mesh is
+    // single-material, so a plain material key is sufficient.
+    const m = mesh.material as THREE.Material;
+    if (m instanceof THREE.MeshStandardMaterial && !seenMats.has(m)) {
+      seenMats.add(m);
+      zoneMat[zone].push(m);
     }
-    parent.add(mesh);
-    const m = mesh.material;
-    if (m instanceof THREE.MeshStandardMaterial) zoneMat[zone].push(m);
-    else if (Array.isArray(m)) m.forEach((mm) => { if (mm instanceof THREE.MeshStandardMaterial) zoneMat[zone].push(mm); });
+    let byMat = mergeBuckets.get(parent);
+    if (!byMat) { byMat = new Map(); mergeBuckets.set(parent, byMat); }
+    let bucket = byMat.get(m);
+    if (!bucket) { bucket = { mat: m, meshes: [] }; byMat.set(m, bucket); }
+    bucket.meshes.push(mesh);
     return mesh;
   };
 
@@ -79,23 +118,24 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
     add(pocket, leg, 'limb', false);
     // Knee pad
     const knee = box(0.17, 0.15, 0.15, fabricDark);
-    knee.position.set(0, -0.52, -0.09);
+    knee.position.set(0, -0.5, -0.09);
     add(knee, leg, 'limb');
     // Shin
     const shin = box(0.15, 0.34, 0.16, fabric);
-    shin.position.set(0, -0.74, 0);
+    shin.position.set(0, -0.63, 0);
     add(shin, leg, 'limb');
     // Boot
     const boot = box(0.17, 0.14, 0.3, fabricDark);
-    boot.position.set(0, -0.94, -0.05);
+    boot.position.set(0, -0.8, -0.05);
     add(boot, leg, 'limb');
-    // Boot sole + tread lines
+    // Boot sole + tread lines — sole bottom rests exactly on the ground (y=0)
+    // so the feet never sink into the terrain.
     const sole = box(0.18, 0.04, 0.32, metal);
-    sole.position.set(0, -1.02, -0.05);
+    sole.position.set(0, -0.9, -0.05);
     add(sole, leg, 'limb');
     for (let t = -0.1; t <= 0.1; t += 0.05) {
       const tread = box(0.19, 0.02, 0.05, metal);
-      tread.position.set(0, -1.045, -0.05 + t);
+      tread.position.set(0, -0.915, -0.05 + t);
       add(tread, leg, 'limb', false);
     }
   });
@@ -362,6 +402,10 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
   flashMesh.visible = false;
   muzzle.add(flashMesh);
 
+  // Bake buffered parts into merged geometry per material. The rig hierarchy
+  // (torso/head/limbs/gun) stays fully animatable — only the draw calls drop.
+  [legL, legR, armL, armR, torso, head, mag, gun].forEach(finalize);
+
   // ===================== HIT ZONES =====================
   // Attached to the animated groups so they follow crouch/prone poses.
   const hitHead = new THREE.Mesh(new THREE.SphereGeometry(0.26, 8, 6), new THREE.MeshBasicMaterial({ visible: false }));
@@ -387,6 +431,12 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
 
   // ---- skin switching ----
   const palette = { fabric, fabricDark, vest, accentMat, accentDark, metal, glass, webbing, skin, gunMetal, gunPoly, wood };
+  // Readability: faint self-illumination so operators read against the terrain
+  // at range without looking emissive up close.
+  fabric.emissive.set(isEnemy ? 0x1c0710 : 0x07120c);
+  fabric.emissiveIntensity = isEnemy ? 0.34 : 0.16;
+  vest.emissive.set(isEnemy ? 0x150509 : 0x050a07);
+  vest.emissiveIntensity = isEnemy ? 0.3 : 0.14;
   const baseEmissive: WeakMap<THREE.MeshStandardMaterial, number> = new WeakMap();
   const collect = (ms: THREE.MeshStandardMaterial[]) =>
     ms.forEach((m) => { if (!baseEmissive.has(m)) baseEmissive.set(m, m.emissive.getHex()); });
@@ -401,6 +451,10 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
     accentDark.color.set(acd);
     webbing.color.set(enemy ? 0x58102b : 0x155e75);
     accentMat.emissive.set(ac);
+    fabric.emissive.set(enemy ? 0x1c0710 : 0x07120c);
+    fabric.emissiveIntensity = enemy ? 0.34 : 0.16;
+    vest.emissive.set(enemy ? 0x150509 : 0x050a07);
+    vest.emissiveIntensity = enemy ? 0.3 : 0.14;
   };
 
   const flashTimers: number[] = [];

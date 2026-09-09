@@ -265,7 +265,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const aimRef = useRef(false);
   const cookRef = useRef(false);
   const engineRef = useRef<EngineApi | null>(null);
-  const viewModeRef = useRef<'tpp' | 'fpp'>('tpp');
+  const viewModeRef = useRef<'tpp' | 'fpp'>('fpp');
   const phaseRef = useRef<Phase>('countdown');
   const gameOverRef = useRef<GameResult>(null);
   const lastLootRef = useRef<LootItem3D | null>(null);
@@ -277,7 +277,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     kills: 0, phase: 'countdown', zoneRadius: 142, zoneTimer: 45, matchTimer: 300,
     compass: 0, outside: false, reloading: false, aiming: false,
     crouched: false, prone: false, sprinting: false, locomotion: 'idle',
-    viewMode: 'tpp', countdown: 3
+    viewMode: 'fpp', countdown: 3
   });
   const [connStatus, setConnStatus] = useState<ConnectionStatus>('connecting');
   const [opponentName, setOpponentName] = useState<string>(mode === 'ai' ? 'بوت تكتيكي' : 'في انتظار الخصم…');
@@ -318,14 +318,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     const container = mountRef.current;
     if (!container) return;
 
-    const width = container.clientWidth || 400;
-    const height = container.clientHeight || 600;
+    // Size to the full viewport (not the container) so the aspect ratio always
+    // matches the screen — a narrow container would otherwise stretch the view.
+    const width = window.innerWidth || container.clientWidth || 400;
+    const height = window.innerHeight || container.clientHeight || 600;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.12;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -1032,12 +1034,17 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     document.addEventListener('pointerlockchange', onLockChange);
 
     const handleResize = () => {
-      const w = container.clientWidth, h = container.clientHeight;
+      const w = window.innerWidth || container.clientWidth;
+      const h = window.innerHeight || container.clientHeight;
+      if (w <= 0 || h <= 0) return;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
       renderer.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', handleResize);
 
     // ============================================================
     // Engine API (exposed to React touch handlers)
@@ -1099,10 +1106,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       },
       setMove: (x, y) => { moveVecRef.current = { x, y }; },
       addLook: (dx, dy) => {
-        const sens = 0.0026;
+        // Slower, steadier aim; ADS applies extra slowdown for fine control.
+        const sens = 0.0022 * (aimRef.current ? 0.55 : 1);
         p.yaw -= dx * sens;
         p.pitch -= dy * sens;
-        p.pitch = Math.max(-1.35, Math.min(1.35, p.pitch));
+        p.pitch = Math.max(-1.45, Math.min(1.45, p.pitch));
       }
     };
 
@@ -1523,7 +1531,10 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const viewMode = viewModeRef.current;
       const crouchEye = p.crouched ? 1.15 : 1.65;
       const eyeH = p.prone ? 0.42 : crouchEye + (sliding ? -0.25 : 0);
-      const targetFov = aimRef.current ? (currentWeapon()?.def.adsFov ?? 45) : viewMode === 'fpp' ? 75 : 70;
+      // FPP aim = per-weapon ADS (sniper zooms to 15°). TPP aim = shoulder zoom.
+      const targetFov = aimRef.current
+        ? (viewMode === 'fpp' ? (currentWeapon()?.def.adsFov ?? 45) : 55)
+        : viewMode === 'fpp' ? 75 : 70;
       camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, dt * 10);
       camera.updateProjectionMatrix();
 
@@ -1562,12 +1573,38 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         );
         camPos.x += Math.cos(p.yaw) * p.lean * 0.6;
         camPos.z += -Math.sin(p.yaw) * p.lean * 0.6;
+
+        // Never let the orbit camera sink below the terrain when looking down.
+        camPos.y = Math.max(camPos.y, getHeightAt(camPos.x, camPos.z) + 0.35);
+
+        // Camera collision: pull the camera in when a wall stands between the
+        // player's chest and the desired orbit point (prevents seeing through
+        // buildings and popping geometry).
+        const chest = new THREE.Vector3(p.pos.x, p.pos.y + 1.5, p.pos.z);
+        const toCam = camPos.clone().sub(chest);
+        const camLen = toCam.length();
+        if (camLen > 1e-4) {
+          const camDir = toCam.normalize();
+          let tMin = camLen;
+          for (const o of obstacles) {
+            if (!o.blocksBullets) continue;
+            const t = rayHitsAABB(chest, camDir, o.box);
+            if (t !== null && t >= 0 && t < tMin) tMin = t;
+          }
+          if (tMin < camLen - 0.2) {
+            camPos.copy(chest).addScaledVector(camDir, Math.max(0.3, tMin - 0.25));
+            camPos.y = Math.max(camPos.y, getHeightAt(camPos.x, camPos.z) + 0.3);
+          }
+        }
+
         camera.position.lerp(camPos, dt * 14);
         const look = new THREE.Vector3(
           p.pos.x - Math.sin(p.yaw) * 30,
           p.pos.y + 1.5 + Math.sin(p.pitch) * 30,
           p.pos.z - Math.cos(p.yaw) * 30
         );
+        // Keep the look-at point above ground so the view never dips under it.
+        look.y = Math.max(look.y, getHeightAt(look.x, look.z) + 0.4);
         camera.lookAt(look);
         camera.rotateZ(-p.lean * 0.06);
       }
@@ -1690,6 +1727,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       renderer.domElement.removeEventListener('contextmenu', onContext);
       document.removeEventListener('pointerlockchange', onLockChange);
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+      if (window.visualViewport) window.visualViewport.removeEventListener('resize', handleResize);
       multiplayer.cleanup();
       scene.traverse((o) => {
         const obj = o as THREE.Mesh;
@@ -1747,23 +1786,25 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const hpColor = hpPct > 55 ? 'from-emerald-500 to-green-400' : hpPct > 25 ? 'from-amber-500 to-yellow-400' : 'from-red-600 to-rose-500';
   const activeDef = WEAPONS[hud.wtype];
   const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+  // Dynamic crosshair spread: tight while aiming/crouched, wide while sprinting.
+  const crossSpread = hud.aiming ? 3 : hud.sprinting ? 13 : hud.crouched || hud.prone ? 6 : 9;
 
   // ============================================================
   // Render
   // ============================================================
   return (
-    <div className="fixed inset-0 z-50 w-full h-full max-w-lg mx-auto bg-black overflow-hidden flex flex-col select-none touch-none" dir="rtl">
+    <div className="fixed inset-0 z-50 w-screen h-[100dvh] bg-black overflow-hidden flex flex-col select-none touch-none" dir="rtl">
       <div ref={mountRef} className="absolute inset-0 cursor-crosshair" />
 
-      {/* ===================== CROSSHAIR ===================== */}
-      {hud.phase !== 'over' && hud.viewMode === 'fpp' && (!hud.aiming || activeDef.type !== 'awm') && (
+      {/* ===================== CROSSHAIR (both view modes, dynamic spread) ===================== */}
+      {hud.phase !== 'over' && !(hud.aiming && activeDef.type === 'awm') && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
-          <div className={`relative w-5 h-5 ${hud.aiming ? 'scale-75' : ''}`}>
-            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-cyan-300" />
-            <div className="absolute left-1/2 -translate-x-1/2 -top-2 w-px h-2 bg-cyan-300/90" />
-            <div className="absolute left-1/2 -translate-x-1/2 -bottom-2 w-px h-2 bg-cyan-300/90" />
-            <div className="absolute top-1/2 -translate-y-1/2 -left-2 w-2 h-px bg-cyan-300/90" />
-            <div className="absolute top-1/2 -translate-y-1/2 -right-2 w-2 h-px bg-cyan-300/90" />
+          <div className="relative w-1 h-1">
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-cyan-200 shadow-[0_0_5px_rgba(103,232,249,0.9)]" />
+            <div className="absolute left-1/2 -translate-x-1/2 w-px bg-cyan-200/95" style={{ bottom: `calc(100% + ${crossSpread}px)`, height: 6 }} />
+            <div className="absolute left-1/2 -translate-x-1/2 w-px bg-cyan-200/95" style={{ top: `calc(100% + ${crossSpread}px)`, height: 6 }} />
+            <div className="absolute top-1/2 -translate-y-1/2 h-px bg-cyan-200/95" style={{ right: `calc(100% + ${crossSpread}px)`, width: 6 }} />
+            <div className="absolute top-1/2 -translate-y-1/2 h-px bg-cyan-200/95" style={{ left: `calc(100% + ${crossSpread}px)`, width: 6 }} />
           </div>
         </div>
       )}

@@ -73,22 +73,22 @@ export const MAP_CATALOG: Record<MapId, MapMetadata> = {
     nameAr: 'منطقة الحرب الكبرى (Tactical Warzone)',
     subtitleAr: 'ساحة 200×200 متر — أحياء، ميناء، ومدينة أشباح',
     previewColor: 'from-zinc-950 via-cyan-950 to-amber-950',
-    skyColor: '#15202b',
-    fogColor: '#232e39',
-    fogDensity: 0.0068,
+    skyColor: '#27405c',
+    fogColor: '#4a5f74',
+    fogDensity: 0.0042,
     descriptionAr: 'ميدان عمليات واسع بمناطق قتال بعيدة وقريبة، طرق، نهر، ومبانٍ متعددة الطوابق.',
     icon: '◈',
     theme: 'dusk',
-    sunColor: '#ffd9a0',
-    ambientColor: '#7d8aa8',
-    hemisphereSky: '#86a8c9',
-    hemisphereGround: '#33402f',
-    sunElevation: 26,
+    sunColor: '#ffe0a8',
+    ambientColor: '#a9bdd6',
+    hemisphereSky: '#b9d4ec',
+    hemisphereGround: '#46523c',
+    sunElevation: 42,
     sunAzimuth: 155,
-    groundBase: '#4c5a3c',
-    groundRock: '#5d5644',
-    groundSand: '#7a6a4c',
-    groundGrass: '#4a5f36'
+    groundBase: '#5a6b45',
+    groundRock: '#6d654e',
+    groundSand: '#8d7b57',
+    groundGrass: '#57703e'
   }
 };
 
@@ -308,7 +308,7 @@ function desertHeight(x: number, z: number): number {
 function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId):
   { getHeightAt: (x: number, z: number) => number; bounds: number } {
   const bounds = mapId === 'warzone' ? 100 : 90;
-  const sub = mapId === 'warzone' ? 140 : 90;
+  const sub = mapId === 'warzone' ? 165 : 90;
   const geo = new THREE.PlaneGeometry(bounds * 2, bounds * 2, sub, sub);
   geo.rotateX(-Math.PI / 2);
 
@@ -320,6 +320,8 @@ function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId):
 
   const grass = new THREE.Color(meta.groundGrass);
   const grassLow = new THREE.Color('#39482c');
+  const grassDry = new THREE.Color('#8a7a4e');
+  const grassLush = new THREE.Color('#3f5c2c');
   const dirt = new THREE.Color(meta.groundRock);
   const sand = new THREE.Color(meta.groundSand);
   const asphalt = new THREE.Color('#26292b');
@@ -341,9 +343,16 @@ function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId):
     } else if (mapId === 'desert') {
       c = tmp.copy(dirt).lerp(sand, (Math.sin(x * 0.11) * Math.cos(z * 0.09) + 1) * 0.5);
     } else {
+      // Layered meadow variation: base grass -> dirt patches -> dry vs lush
+      // zones -> height tint -> per-vertex micro variation.
       const patch = Math.sin(x * 0.16 + 2.0) * Math.cos(z * 0.21 + 1.0);
+      const dryN = Math.sin(x * 0.09 + 1.1) * Math.cos(z * 0.07 - 0.4);
+      const micro = Math.sin(x * 0.5 + z * 0.4) * 0.5 + 0.5;
       tmp.copy(grass).lerp(dirt, clamp01(patch * 0.9 + 0.35));
+      tmp.lerp(grassDry, clamp01(dryN * 0.5 + 0.28) * 0.55);
+      tmp.lerp(grassLush, clamp01(-dryN * 0.5 + 0.3) * 0.4);
       tmp.lerp(grassLow, clamp01((h + 2.5) / 6.0) * 0.5);
+      tmp.offsetHSL(0, 0, (micro - 0.5) * 0.03);
       c = tmp;
     }
     colors[i * 3] = c.r;
@@ -422,6 +431,53 @@ interface BuildingResult {
 }
 
 // Bake local solids to world-space colliders for a placed group.
+// Merge every static mesh inside `root` (buildings, vehicles, containers) into
+// a single mesh per shared material. All static builders emit non-indexed
+// primitives, so the merge is lossless; it collapses ~100 building draw calls
+// down to ~15 (one per material) which keeps the whole arena well under the
+// 200 draw-call budget once soldiers and the weapon viewmodel are added.
+function mergeStaticWorld(scene: THREE.Scene, root: THREE.Group): void {
+  scene.updateMatrixWorld(true);
+  const buckets = new Map<THREE.Material, THREE.Mesh[]>();
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!(mesh as unknown as { isMesh?: boolean }).isMesh) return;
+    if ((mesh as unknown as { isInstancedMesh?: boolean }).isInstancedMesh) return;
+    const m = mesh.material as THREE.Material;
+    const b = buckets.get(m);
+    if (b) b.push(mesh);
+    else buckets.set(m, [mesh]);
+  });
+
+  const mergedGroup = new THREE.Group();
+  mergedGroup.name = 'staticWorld';
+  buckets.forEach((meshes, mat) => {
+    const geos = meshes.map((m) => {
+      const g = m.geometry.clone();
+      g.applyMatrix4(m.matrixWorld);
+      return g;
+    });
+    let merged: THREE.BufferGeometry;
+    if (geos.length === 1) {
+      merged = geos[0];
+    } else {
+      merged = mergeGeometries(geos, false) ?? new THREE.BufferGeometry();
+      geos.forEach((g) => g.dispose());
+    }
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mergedGroup.add(mesh);
+  });
+
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if ((mesh as unknown as { isMesh?: boolean }).isMesh && mesh.geometry) mesh.geometry.dispose();
+  });
+  scene.remove(root);
+  scene.add(mergedGroup);
+}
+
 function bakeSolids(parts: Parts, x: number, y: number, z: number, ry: number): CoverObstacle3D[] {
   return parts.solids.map((s) => {
     const c = s.box.clone().applyMatrix4(new THREE.Matrix4().makeRotationY(ry)).translate(new THREE.Vector3(x, y, z));
@@ -639,10 +695,18 @@ function buildContainerYard(mats: MapMaterials, x: number, z: number, ry: number
   const parts = new Parts();
   const colors = ['#1e3a8a', '#991b1b', '#15803d', '#b45309', '#7c3aed', '#0e7490'];
   const rng = mulberry32(77);
+  // One material instance per paint colour (shared across the whole yard) so
+  // the static merge collapses every container side into ~6 draw calls.
+  const paintCache = new Map<string, THREE.MeshStandardMaterial>();
+  const paintFor = (hex: string): THREE.MeshStandardMaterial => {
+    let m = paintCache.get(hex);
+    if (!m) { m = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.5, metalness: 0.5 }); paintCache.set(hex, m); }
+    return m;
+  };
 
   const place = (cx: number, cz: number, rot: number, stack: number) => {
     for (let s = 0; s < stack; s++) {
-      const c = new THREE.MeshStandardMaterial({ color: colors[Math.floor(rng() * colors.length)], roughness: 0.5, metalness: 0.5 });
+      const c = paintFor(colors[Math.floor(rng() * colors.length)]);
       parts.solid(c, 2.6, 2.6, 6.1, cx, 1.3 + s * 2.6, cz, 'crate', false, false, rot);
       const ox = Math.sin(rot) * 1.3, oz = Math.cos(rot) * 1.3;
       parts.box(c, 0.06, 2.2, 0.06, cx + ox, 1.3 + s * 2.6, cz + oz, 0, rot, 0);
@@ -840,8 +904,8 @@ function buildVegetation(scene: THREE.Scene, mats: MapMaterials, rng: () => numb
     veg.add(bush);
   }
 
-  // Tall grass
-  const grass = place(160, () => true);
+  // Tall grass — dense pass with per-blade tilt for a wild meadow look.
+  const grass = place(300, () => true);
   {
     const blade = new THREE.InstancedMesh(new THREE.ConeGeometry(0.14, 0.9, 4), mats.foliage, grass.length);
     const m = new THREE.Matrix4();
@@ -850,13 +914,50 @@ function buildVegetation(scene: THREE.Scene, mats: MapMaterials, rng: () => numb
       const s = 0.7 + rng() * 0.8;
       m.compose(
         new THREE.Vector3(x, h + 0.3 * s, z),
-        new THREE.Quaternion().setFromEuler(new THREE.Euler((rng() - 0.5) * 0.3, rng() * Math.PI, (rng() - 0.5) * 0.3)),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler((rng() - 0.5) * 0.4, rng() * Math.PI, (rng() - 0.5) * 0.4)),
         new THREE.Vector3(s, s, s)
       );
       blade.setMatrixAt(i, m);
     });
     blade.instanceMatrix.needsUpdate = true;
     veg.add(blade);
+  }
+
+  // Short tuft undergrowth for depth between the tall blades.
+  const tufts = place(220, () => true);
+  {
+    const tuft = new THREE.InstancedMesh(new THREE.ConeGeometry(0.18, 0.5, 4), mats.foliageDark, tufts.length);
+    const m = new THREE.Matrix4();
+    tufts.forEach(([x, z], i) => {
+      const h = hFn(x, z);
+      const s = 0.6 + rng() * 0.6;
+      m.compose(
+        new THREE.Vector3(x, h + 0.18 * s, z),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rng() * Math.PI, 0)),
+        new THREE.Vector3(s, s, s)
+      );
+      tuft.setMatrixAt(i, m);
+    });
+    tuft.instanceMatrix.needsUpdate = true;
+    veg.add(tuft);
+  }
+
+  // Wildflowers — per-instance colored dots scattered through the grass.
+  const flowers = place(150, () => true);
+  {
+    const flowerMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
+    const flower = new THREE.InstancedMesh(new THREE.SphereGeometry(0.09, 5, 4), flowerMat, flowers.length);
+    const petalColors = [0xffd54a, 0xf8fafc, 0xe879f9, 0xf87171, 0x93c5fd];
+    const m = new THREE.Matrix4();
+    flowers.forEach(([x, z], i) => {
+      const h = hFn(x, z);
+      m.makeTranslation(x, h + 0.08, z);
+      flower.setMatrixAt(i, m);
+      flower.setColorAt(i, new THREE.Color(petalColors[i % petalColors.length]));
+    });
+    flower.instanceMatrix.needsUpdate = true;
+    if (flower.instanceColor) flower.instanceColor.needsUpdate = true;
+    veg.add(flower);
   }
 
   // Rocks
@@ -918,8 +1019,65 @@ function buildAtmosphere(scene: THREE.Scene, meta: MapMetadata) {
 }
 
 // ------------------------------------------------------------
-// Loot items
+// Gradient sky dome + sun glow (fully procedural, no textures)
 // ------------------------------------------------------------
+function buildSky(scene: THREE.Scene, meta: MapMetadata) {
+  const R = 520;
+  const sky = new THREE.Color(meta.skyColor);
+  const horizon = new THREE.Color(meta.fogColor);
+  const ground = horizon.clone().multiplyScalar(0.8);
+
+  const geo = new THREE.SphereGeometry(R, 24, 12);
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  const colors = new Float32Array(pos.count * 3);
+  const tmp = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const t = THREE.MathUtils.clamp(pos.getY(i) / R, -1, 1);
+    if (t >= 0) tmp.copy(horizon).lerp(sky, t);
+    else tmp.copy(horizon).lerp(ground, -t);
+    colors[i * 3] = tmp.r;
+    colors[i * 3 + 1] = tmp.g;
+    colors[i * 3 + 2] = tmp.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const dome = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false
+  }));
+  dome.name = 'skyDome';
+  dome.renderOrder = -10;
+  scene.add(dome);
+
+  // Sun disc + soft halo — unlit, unaffected by fog/tonemapping.
+  const sunDir = new THREE.Vector3().setFromSphericalCoords(
+    1, THREE.MathUtils.degToRad(90 - meta.sunElevation), THREE.MathUtils.degToRad(meta.sunAzimuth)
+  );
+  const disc = new THREE.Mesh(
+    new THREE.SphereGeometry(16, 16, 12),
+    new THREE.MeshBasicMaterial({ color: meta.sunColor, fog: false, toneMapped: false })
+  );
+  disc.position.copy(sunDir).multiplyScalar(R * 0.86);
+  disc.name = 'sunDisc';
+  scene.add(disc);
+
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(42, 16, 12),
+    new THREE.MeshBasicMaterial({
+      color: meta.sunColor, transparent: true, opacity: 0.28, fog: false, toneMapped: false,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  halo.position.copy(disc.position);
+  halo.name = 'sunHalo';
+  scene.add(halo);
+}
+
+// ------------------------------------------------------------
+// Loot items — each item renders as 2 draw calls (marker ring + one
+// vertex-coloured body mesh) instead of 4-6.
+// ------------------------------------------------------------
+const LOOT_BODY_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.4 });
+
 function buildLootItem(
   scene: THREE.Scene, id: string, type: LootItem3D['type'],
   nameAr: string, icon: string, color: string, x: number, z: number,
@@ -937,64 +1095,56 @@ function buildLootItem(
   ring.position.y = 0.04;
   group.add(ring);
 
-  const pulse = new THREE.PointLight(color, 1.4, 6, 2);
+  const pulse = new THREE.PointLight(color, 1.2, 5, 2);
   pulse.position.y = 0.8;
   group.add(pulse);
 
-  const mk = (c: string, r: number, m: number) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+  // Collect every body part as a painted, world-transformed geometry, then
+  // collapse them into a single vertex-coloured mesh.
+  const pieces: THREE.BufferGeometry[] = [];
+  const part = (geo: THREE.BufferGeometry, c: string, px = 0, py = 0, pz = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) => {
+    const col = new THREE.Color(c);
+    const cnt = geo.getAttribute('position').count;
+    const arr = new Float32Array(cnt * 3);
+    for (let i = 0; i < cnt; i++) {
+      arr[i * 3] = col.r;
+      arr[i * 3 + 1] = col.g;
+      arr[i * 3 + 2] = col.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    geo.applyMatrix4(new THREE.Matrix4().compose(
+      new THREE.Vector3(px, py, pz),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)),
+      new THREE.Vector3(sx, sy, sz)
+    ));
+    pieces.push(geo);
+  };
 
   if (weaponType === 'rpg') {
-    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.3, 8), mk('#2c5a34', 0.5, 0.4));
-    tube.rotation.z = Math.PI / 2;
-    tube.position.y = 0.3;
-    tube.castShadow = true;
-    group.add(tube);
-    const warhead = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.34, 8), mk('#9a3412', 0.4, 0.5));
-    warhead.rotation.z = -Math.PI / 2;
-    warhead.position.set(0.74, 0.3, 0);
-    warhead.castShadow = true;
-    group.add(warhead);
+    part(new THREE.CylinderGeometry(0.07, 0.07, 1.3, 8), '#2c5a34', 0, 0.3, 0, 0, 0, Math.PI / 2);
+    part(new THREE.ConeGeometry(0.15, 0.34, 8), '#9a3412', 0.74, 0.3, 0, 0, 0, -Math.PI / 2);
   } else if (weaponType === 'awm' || weaponType === 'shotgun' || weaponType === 'mp5' || weaponType === 'ak47') {
-    const body = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.16, 0.22), mk('#11151b', 0.4, 0.8));
-    body.position.y = 0.32;
-    body.castShadow = true;
-    group.add(body);
-    const barrel = new THREE.Mesh(
+    part(new THREE.BoxGeometry(1.0, 0.16, 0.22), '#11151b', 0, 0.32, 0);
+    part(
       new THREE.CylinderGeometry(0.03, 0.03, weaponType === 'awm' ? 1.3 : weaponType === 'shotgun' ? 1.1 : 0.9, 8),
-      mk('#0c1117', 0.35, 0.9)
+      '#0c1117', 0, 0.32, weaponType === 'awm' ? -0.95 : -0.7, Math.PI / 2, 0, 0
     );
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.32, weaponType === 'awm' ? -0.95 : -0.7);
-    group.add(barrel);
-    const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.3, 8), mk('#0c1117', 0.3, 0.9));
-    scope.rotation.x = Math.PI / 2;
-    scope.position.set(0, 0.46, 0.2);
-    group.add(scope);
+    part(new THREE.CylinderGeometry(0.04, 0.04, 0.3, 8), '#0c1117', 0, 0.46, 0.2, Math.PI / 2, 0, 0);
   } else if (type === 'medkit' || type === 'armor') {
-    const box = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.5, 0.4), mk(color, 0.4, 0.3));
-    box.position.y = 0.42;
-    box.castShadow = true;
-    group.add(box);
-    const cross = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.4, 0.06), mk('#ffffff', 0.3, 0.2));
-    cross.position.set(0, 0.42, 0.22);
-    group.add(cross);
-    const cross2 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.06), mk('#ffffff', 0.3, 0.2));
-    cross2.position.set(0, 0.42, 0.22);
-    group.add(cross2);
+    part(new THREE.BoxGeometry(0.7, 0.5, 0.4), color, 0, 0.42, 0);
+    part(new THREE.BoxGeometry(0.16, 0.4, 0.06), '#ffffff', 0, 0.42, 0.22);
+    part(new THREE.BoxGeometry(0.4, 0.16, 0.06), '#ffffff', 0, 0.42, 0.22);
   } else if (type === 'grenade') {
-    const g = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), mk(color, 0.5, 0.4));
-    g.position.y = 0.34;
-    g.castShadow = true;
-    group.add(g);
-    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.16, 6), mk('#fbbf24', 0.4, 0.7));
-    pin.position.set(0, 0.55, 0);
-    group.add(pin);
+    part(new THREE.SphereGeometry(0.2, 10, 8), color, 0, 0.34, 0);
+    part(new THREE.CylinderGeometry(0.02, 0.02, 0.16, 6), '#fbbf24', 0, 0.55, 0);
   } else {
-    const ammo = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.32, 0.32), mk(color, 0.5, 0.6));
-    ammo.position.y = 0.36;
-    ammo.castShadow = true;
-    group.add(ammo);
+    part(new THREE.BoxGeometry(0.55, 0.32, 0.32), color, 0, 0.36, 0);
   }
+
+  const merged = mergeGeometries(pieces, false) ?? new THREE.BufferGeometry();
+  const bodyMesh = new THREE.Mesh(merged, LOOT_BODY_MAT);
+  bodyMesh.castShadow = true;
+  group.add(bodyMesh);
 
   group.position.set(x, y, z);
   scene.add(group);
@@ -1018,15 +1168,16 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
   const ladders: { x: number; z: number; topY: number; baseY: number }[] = [];
   const explosives: CoverObstacle3D[] = [];
 
-  // Atmosphere + lights
-  scene.fog = new THREE.FogExp2(meta.fogColor, mapId === 'warzone' ? 0.0068 : meta.fogDensity);
-  scene.add(new THREE.HemisphereLight(meta.hemisphereSky, meta.hemisphereGround, 0.75));
-  scene.add(new THREE.AmbientLight(meta.ambientColor, 0.42));
+  // Atmosphere + lights — tuned bright so players, terrain and cover all read
+  // clearly at range even on dim mobile screens.
+  scene.fog = new THREE.FogExp2(meta.fogColor, meta.fogDensity);
+  scene.add(new THREE.HemisphereLight(meta.hemisphereSky, meta.hemisphereGround, 1.05));
+  scene.add(new THREE.AmbientLight(meta.ambientColor, 0.55));
 
   const sunDir = new THREE.Vector3().setFromSphericalCoords(
     1, THREE.MathUtils.degToRad(90 - meta.sunElevation), THREE.MathUtils.degToRad(meta.sunAzimuth)
   );
-  const sun = new THREE.DirectionalLight(meta.sunColor, 2.0);
+  const sun = new THREE.DirectionalLight(meta.sunColor, 2.8);
   sun.position.copy(sunDir).multiplyScalar(120);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
@@ -1049,9 +1200,14 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
     buildRiver(scene, mats);
   }
 
-  // Buildings
+  // Buildings — staged into a single group so their meshes can be merged by
+  // material afterwards (see mergeStaticWorld).
+  const staticWorld = new THREE.Group();
+  staticWorld.name = 'staticWorldRoot';
+  scene.add(staticWorld);
+
   const placeBuilding = (b: BuildingResult) => {
-    scene.add(b.group);
+    staticWorld.add(b.group);
     obstacles.push(...b.colliders);
     ladders.push(...b.ladders);
   };
@@ -1076,8 +1232,12 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
   }
 
   const vehicles = buildDestroyedVehicles(mats, getHeightAt);
-  scene.add(vehicles.group);
+  staticWorld.add(vehicles.group);
   obstacles.push(...vehicles.colliders);
+
+  // Collapse all static geometry into one mesh per material (major draw-call
+  // win — colliders are Box3 copies, so gameplay is unaffected).
+  mergeStaticWorld(scene, staticWorld);
 
   // Explosive fuel tanks
   obstacles.forEach((o) => { if (o.explosive) explosives.push(o); });
@@ -1087,8 +1247,9 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
     buildVegetation(scene, mats, rng, getHeightAt, mapId === 'warzone');
   }
 
-  // Atmosphere particles
+  // Atmosphere particles + gradient sky
   buildAtmosphere(scene, meta);
+  buildSky(scene, meta);
 
   // Loot
   const loot = (
