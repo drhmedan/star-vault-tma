@@ -14,6 +14,7 @@ import {
 } from '../game3d/types3d';
 import { multiplayer, ConnectionStatus } from '../services/multiplayer';
 import { sound } from '../audio/soundEngine';
+import { tgHaptics } from '../services/telegramHaptics';
 
 interface Pubg3DArenaProps {
   user: UserProfile;
@@ -525,6 +526,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const selectSlot = (slot: WeaponSlotId) => {
     if (!weapons[slot]) return;
     sound.playPickup();
+    tgHaptics.selection();
     setActiveSlot(slot);
   };
 
@@ -532,6 +534,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const pickupNearbyLoot = () => {
     if (!nearbyLoot) return;
     sound.playPickup();
+    tgHaptics.notification('success');
 
     if (nearbyLoot.type === 'weapon' && nearbyLoot.weaponType) {
       const newGun: WeaponSlotState = nearbyLoot.weaponType === 'awm' ? {
@@ -605,6 +608,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     }));
 
     sound.playGunshot(curWeapon.weaponType);
+    tgHaptics.impact(curWeapon.weaponType === 'awm' ? 'heavy' : 'medium');
 
     // 3D Raycasting from crosshair center
     const raycaster = new THREE.Raycaster();
@@ -638,6 +642,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     opponentHpRef.current = Math.max(0, opponentHpRef.current - dmg);
     multiplayer.sendBulletHit(999999, dmg, weapons[activeSlot]?.weaponType || 'ak47');
 
+    if (isHeadshot) {
+      tgHaptics.notification('success');
+    } else {
+      tgHaptics.impact('light');
+    }
+
     setDamageFeed(isHeadshot ? `🎯 HEADSHOT! -${Math.round(dmg)}` : `💥 HIT! -${Math.round(dmg)}`);
     setTimeout(() => setDamageFeed(null), 1200);
 
@@ -649,6 +659,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
   const takeDamage = (dmg: number) => {
     sound.playHurt();
+    tgHaptics.impact('heavy');
     setHp(prev => {
       let curArmor = armor;
       let newHp = prev;
@@ -679,6 +690,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
     setIsReloading(true);
     sound.playReload();
+    tgHaptics.impact('light');
 
     setTimeout(() => {
       const needed = cur.magazineSize - cur.ammoInClip;
@@ -698,6 +710,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const useMedkitItem = () => {
     if (medkits <= 0 || hp >= 100) return;
     sound.playPickup();
+    tgHaptics.impact('light');
     setMedkits(m => m - 1);
     setHp(h => Math.min(100, h + 50));
   };
@@ -706,6 +719,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     if (gameOver) return;
     setGameOver('victory');
     sound.playReveal('mythic');
+    tgHaptics.notification('success');
     confetti({ particleCount: 140, spread: 90, origin: { y: 0.5 } });
     multiplayer.sendGameOver(user.id);
     const starReward = stakeStars > 0 ? Math.floor(stakeStars * 1.8) : 0;
@@ -716,6 +730,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     if (gameOver) return;
     setGameOver('defeat');
     sound.playClick();
+    tgHaptics.notification('error');
     onMatchComplete(false, -20, 30, 0);
   };
 
@@ -741,7 +756,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const activeWeapon = weapons[activeSlot];
 
   return (
-    <div className="relative w-full h-[680px] max-w-md mx-auto bg-slate-950 rounded-3xl overflow-hidden border border-slate-800 shadow-2xl flex flex-col select-none">
+    <div className="fixed inset-0 z-50 w-full h-full max-w-lg mx-auto bg-slate-950 overflow-hidden border-x border-slate-800 shadow-2xl flex flex-col select-none touch-none">
       {/* 3D WebGL Canvas Container */}
       <div 
         ref={mountRef} 

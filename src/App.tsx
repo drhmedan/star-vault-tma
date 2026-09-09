@@ -82,6 +82,12 @@ export const App: React.FC = () => {
     if (tg) {
       tg.ready();
       tg.expand();
+      if (typeof tg.disableVerticalSwipes === 'function') {
+        tg.disableVerticalSwipes();
+      }
+      if (typeof tg.enableClosingConfirmation === 'function') {
+        tg.enableClosingConfirmation();
+      }
       try {
         tg.setHeaderColor('#080b11');
         tg.setBackgroundColor('#080b11');
@@ -212,19 +218,21 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between max-w-lg mx-auto border-x border-slate-800/40 shadow-2xl relative" dir="rtl">
-      {/* Top Header */}
-      <Header 
-        user={user}
-        onOpenShop={() => setTab('shop')}
-        muted={muted}
-        onToggleMute={() => {
-          const isMuted = sound.toggleMute();
-          setMuted(isMuted);
-        }}
-      />
+      {/* Top Header - Hidden during active 3D shooter match for fullscreen immersion */}
+      {!activeMatch && (
+        <Header 
+          user={user}
+          onOpenShop={() => setTab('shop')}
+          muted={muted}
+          onToggleMute={() => {
+            const isMuted = sound.toggleMute();
+            setMuted(isMuted);
+          }}
+        />
+      )}
 
       {/* Main View Area */}
-      <main className="p-4 flex-1 pb-24">
+      <main className={activeMatch ? "flex-1 w-full h-full p-0 overflow-hidden" : "p-4 flex-1 pb-24"}>
         {/* TAB 1: CYBER WAR (ONLINE PVP 3D) */}
         {tab === 'cyberwar' && (
           activeMatch ? (
@@ -323,38 +331,40 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Sticky Bottom Navigation Bar (TMA Standard) */}
-      <nav className="fixed bottom-0 inset-x-0 max-w-lg mx-auto bg-slate-950/95 backdrop-blur-lg border-t border-slate-800/80 px-2 py-2 flex justify-around items-center z-40">
-        {[
-          { id: 'cyberwar', label: 'ساحة الحرب', icon: Swords },
-          { id: 'loadout', label: 'العتاد', icon: Shield },
-          { id: 'vaults', label: 'الصناديق', icon: Package },
-          { id: 'wheel', label: 'العجلة', icon: Disc },
-          { id: 'inventory', label: 'حقيبتي', icon: Backpack },
-          { id: 'shop', label: 'النجوم', icon: Star },
-          { id: 'referrals', label: 'الإحالات', icon: Users }
-        ].map(item => {
-          const isActive = tab === item.id;
-          const Icon = item.icon;
-          return (
-            <button
-              key={item.id}
-              className={`flex flex-col items-center justify-center py-1 px-1.5 rounded-xl transition-all ${
-                isActive 
-                  ? 'text-cyan-400 font-bold scale-105' 
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-              onClick={() => {
-                sound.playClick();
-                setTab(item.id as TabType);
-              }}
-            >
-              <Icon size={18} className={isActive ? 'stroke-[2.5]' : 'stroke-2'} />
-              <span className="text-[10px] mt-0.5">{item.label}</span>
-            </button>
-          );
-        })}
-      </nav>
+      {/* Sticky Bottom Navigation Bar (TMA Standard) - Hidden during active match */}
+      {!activeMatch && (
+        <nav className="fixed bottom-0 inset-x-0 max-w-lg mx-auto bg-slate-950/95 backdrop-blur-lg border-t border-slate-800/80 px-2 py-2 flex justify-around items-center z-40">
+          {[
+            { id: 'cyberwar', label: 'ساحة الحرب', icon: Swords },
+            { id: 'loadout', label: 'العتاد', icon: Shield },
+            { id: 'vaults', label: 'الصناديق', icon: Package },
+            { id: 'wheel', label: 'العجلة', icon: Disc },
+            { id: 'inventory', label: 'حقيبتي', icon: Backpack },
+            { id: 'shop', label: 'النجوم', icon: Star },
+            { id: 'referrals', label: 'الإحالات', icon: Users }
+          ].map(item => {
+            const isActive = tab === item.id;
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                className={`flex flex-col items-center justify-center py-1 px-1.5 rounded-xl transition-all ${
+                  isActive 
+                    ? 'text-cyan-400 font-bold scale-105' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                onClick={() => {
+                  sound.playClick();
+                  setTab(item.id as TabType);
+                }}
+              >
+                <Icon size={18} className={isActive ? 'stroke-[2.5]' : 'stroke-2'} />
+                <span className="text-[10px] mt-0.5">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
     </div>
   );
 };
