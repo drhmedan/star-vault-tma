@@ -47,16 +47,29 @@ export function buildMapEnvironment(
   const meta = MAP_CATALOG[mapId];
 
   // 1. Atmosphere & Fog
-  scene.fog = new THREE.FogExp2(meta.fogColor, 0.009);
+  scene.fog = new THREE.FogExp2(mapId === 'warzone' ? '#111827' : meta.fogColor, mapId === 'warzone' ? 0.012 : 0.009);
 
-  const ambientLight = new THREE.AmbientLight(mapId === 'desert' ? '#fef3c7' : '#94a3b8', 0.9);
+  const hemisphereLight = new THREE.HemisphereLight(
+    mapId === 'desert' ? '#fbbf24' : '#38bdf8',
+    mapId === 'desert' ? '#78350f' : '#1e293b',
+    0.65
+  );
+  scene.add(hemisphereLight);
+
+  const ambientLight = new THREE.AmbientLight(mapId === 'desert' ? '#fef3c7' : '#94a3b8', 0.35);
   scene.add(ambientLight);
 
-  const sunLight = new THREE.DirectionalLight(mapId === 'desert' ? '#fbbf24' : '#fffbeb', 1.7);
-  sunLight.position.set(mapId === 'desert' ? 80 : 60, 110, 40);
+  const sunLight = new THREE.DirectionalLight(mapId === 'desert' ? '#fbbf24' : '#fffbeb', 1.8);
+  sunLight.position.set(60, 100, 40);
   sunLight.castShadow = true;
-  sunLight.shadow.mapSize.width = 1024;
-  sunLight.shadow.mapSize.height = 1024;
+  sunLight.shadow.mapSize.width = 2048;
+  sunLight.shadow.mapSize.height = 2048;
+  sunLight.shadow.camera.near = 1;
+  sunLight.shadow.camera.far = 260;
+  sunLight.shadow.camera.left = -130;
+  sunLight.shadow.camera.right = 130;
+  sunLight.shadow.camera.top = 130;
+  sunLight.shadow.camera.bottom = -130;
   scene.add(sunLight);
 
   // 2. Ground Terrain
@@ -180,12 +193,62 @@ export function buildMapEnvironment(
 
   if (mapId === 'warzone') {
     const battlefieldMat = new THREE.MeshStandardMaterial({ color: '#3f4644', roughness: 0.92, metalness: 0.08 });
+    const steelMat = new THREE.MeshStandardMaterial({ color: '#172126', roughness: 0.7, metalness: 0.65 });
     const roadMat = new THREE.MeshStandardMaterial({ color: '#202728', roughness: 0.96 });
-    const road = new THREE.Mesh(new THREE.BoxGeometry(12, 0.08, 190), roadMat);
+    const road = new THREE.Mesh(new THREE.BoxGeometry(16, 0.08, 190), roadMat);
     road.position.set(0, 0.04, 0);
     road.receiveShadow = true;
     scene.add(road);
 
+    // Broken center line and solid shoulders make the route readable at gameplay scale.
+    for (let z = -86; z <= 86; z += 12) {
+      const dash = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.02, 5), new THREE.MeshStandardMaterial({ color: '#fbbf24', roughness: 0.8 }));
+      dash.position.set(0, 0.1, z);
+      scene.add(dash);
+    }
+    [-7.3, 7.3].forEach((x) => {
+      const shoulder = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.025, 188), new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.85 }));
+      shoulder.position.set(x, 0.1, 0);
+      scene.add(shoulder);
+    });
+
+    // Reinforced depot with an open central bay, rafters, columns, and roof panels.
+    const depot = new THREE.Group();
+    const concrete = new THREE.MeshStandardMaterial({ color: '#687276', roughness: 0.9 });
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(36, 0.28, 24), concrete);
+    slab.position.y = 0.14;
+    depot.add(slab);
+    [-17, 17].forEach((x) => {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(0.7, 7, 22), concrete);
+      wall.position.set(x, 3.5, 0);
+      depot.add(wall);
+    });
+    [-10, 10].forEach((z) => {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(34, 7, 0.7), concrete);
+      wall.position.set(0, 3.5, z);
+      depot.add(wall);
+    });
+    [-16, 16].forEach((x) => [-10, 10].forEach((z) => {
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(0.7, 8, 0.7), steelMat);
+      beam.position.set(x, 4, z);
+      depot.add(beam);
+    }));
+    for (let x = -14; x <= 14; x += 4) {
+      const rafter = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 21), steelMat);
+      rafter.position.set(x, 7.4, 0);
+      rafter.rotation.x = x % 8 === 0 ? 0.12 : -0.12;
+      depot.add(rafter);
+    }
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(36, 0.25, 24), new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.75, metalness: 0.5 }));
+    roof.position.y = 8;
+    roof.rotation.z = 0.04;
+    depot.add(roof);
+    depot.position.set(25, 0, -28);
+    depot.traverse((child) => { if (child instanceof THREE.Mesh) { child.castShadow = true; child.receiveShadow = true; } });
+    scene.add(depot);
+    obstacles.push({ mesh: depot, box: new THREE.Box3(new THREE.Vector3(7, 0, -40), new THREE.Vector3(43, 7, -18)), type: 'building' });
+
+    // Tactical ridges, trenches, and container stacks.
     [-54, -28, 28, 54].forEach((x) => {
       const ridge = new THREE.Mesh(new THREE.BoxGeometry(8, 1.8, 150), battlefieldMat);
       ridge.position.set(x, 0.9, 0);
@@ -194,7 +257,6 @@ export function buildMapEnvironment(
       scene.add(ridge);
       obstacles.push({ mesh: ridge, box: new THREE.Box3().setFromObject(ridge), type: 'building' });
     });
-
     [-70, -35, 35, 70].forEach((z) => {
       const trench = new THREE.Mesh(new THREE.BoxGeometry(150, 0.7, 2.4), new THREE.MeshStandardMaterial({ color: '#242b28', roughness: 1 }));
       trench.position.set(0, -0.2, z);
@@ -205,16 +267,33 @@ export function buildMapEnvironment(
       scene.add(wall);
       obstacles.push({ mesh: wall, box: new THREE.Box3().setFromObject(wall), type: 'building' });
     });
+    [[-22, -6, '#1e3a8a'], [-18, -12, '#c2410c'], [20, 12, '#1e3a8a'], [25, 8, '#c2410c']].forEach(([x, z, color]) => {
+      const container = new THREE.Mesh(new THREE.BoxGeometry(3.2, 3.2, 12), new THREE.MeshStandardMaterial({ color: color as string, roughness: 0.55, metalness: 0.45 }));
+      container.position.set(x as number, 1.6, z as number);
+      container.castShadow = true;
+      scene.add(container);
+      obstacles.push({ mesh: container, box: new THREE.Box3().setFromObject(container), type: 'crate' });
+    });
 
+    // Four elevated watchtowers with steel legs, decks, and railings.
     [[-38, -32], [38, -32], [-38, 32], [38, 32]].forEach(([x, z]) => {
       const tower = new THREE.Group();
-      const legs = new THREE.Mesh(new THREE.BoxGeometry(4, 6, 4), new THREE.MeshStandardMaterial({ color: '#56605d', roughness: 0.8, metalness: 0.35 }));
-      legs.position.y = 3;
-      tower.add(legs);
-      const platform = new THREE.Mesh(new THREE.BoxGeometry(6, 0.4, 6), new THREE.MeshStandardMaterial({ color: '#202728', metalness: 0.55, roughness: 0.55 }));
-      platform.position.y = 6.2;
+      [-1, 1].forEach((dx) => [-1, 1].forEach((dz) => {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.28, 10, 0.28), steelMat);
+        leg.position.set(dx * 2.3, 5, dz * 2.3);
+        leg.rotation.z = -dx * 0.08;
+        tower.add(leg);
+      }));
+      const platform = new THREE.Mesh(new THREE.BoxGeometry(6, 0.35, 6), steelMat);
+      platform.position.y = 9.8;
       tower.add(platform);
+      [-2.8, 2.8].forEach((v) => {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.2, 6), steelMat);
+        rail.position.set(v, 10.5, 0);
+        tower.add(rail);
+      });
       tower.position.set(x, 0, z);
+      tower.traverse((child) => { if (child instanceof THREE.Mesh) child.castShadow = true; });
       scene.add(tower);
       obstacles.push({ mesh: tower, box: new THREE.Box3().setFromObject(tower), type: 'building' });
     });
