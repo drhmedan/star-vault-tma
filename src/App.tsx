@@ -15,6 +15,7 @@ import { ReferralHub } from './components/ReferralHub';
 import { Inventory } from './components/Inventory';
 import { PvPLobby } from './components/PvPLobby';
 import { CyberTacticsArena } from './components/CyberTacticsArena';
+import { PubgArena } from './components/PubgArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
 import { sound } from './audio/soundEngine';
 
@@ -224,7 +225,7 @@ export const App: React.FC = () => {
         {/* TAB 1: CYBER WAR (ONLINE PVP) */}
         {tab === 'cyberwar' && (
           activeMatch ? (
-            <CyberTacticsArena 
+            <PubgArena 
               user={user}
               roomCode={activeMatch.roomCode}
               mode={activeMatch.mode}

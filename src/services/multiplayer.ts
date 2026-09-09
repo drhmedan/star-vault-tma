@@ -250,6 +250,44 @@ export class MultiplayerService {
     });
   }
 
+  // Shooter Real-Time Sync Methods
+  public sendShooterState(state: any) {
+    this.sendMessage({
+      type: 'SYNC_SHOOTER_STATE' as any,
+      senderId: this.myPlayerId,
+      payload: state,
+      timestamp: Date.now()
+    });
+  }
+
+  public sendShootBullets(bullets: any[]) {
+    this.sendMessage({
+      type: 'SHOOT_BULLETS' as any,
+      senderId: this.myPlayerId,
+      payload: { bullets },
+      timestamp: Date.now()
+    });
+  }
+
+  public sendBulletHit(victimId: number, damage: number, weaponType: string) {
+    this.sendMessage({
+      type: 'BULLET_HIT' as any,
+      senderId: this.myPlayerId,
+      payload: { victimId, damage, weaponType },
+      timestamp: Date.now()
+    });
+  }
+
+  public sendLootTaken(lootId: string) {
+    this.sendMessage({
+      type: 'LOOT_TAKEN' as any,
+      senderId: this.myPlayerId,
+      payload: { lootId },
+      timestamp: Date.now()
+    });
+  }
+
+
   private updateStatus(status: ConnectionStatus, peerName?: string) {
     this.status = status;
     if (this.onStatusChangeCallback) {

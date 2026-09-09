@@ -163,7 +163,7 @@ export interface PvPPlayerInfo {
 }
 
 export interface MultiplayerMessage {
-  type: 'JOIN_ROOM' | 'READY' | 'DEPLOY_UNIT' | 'USE_ABILITY' | 'COMBAT_START' | 'SYNC_DAMAGE' | 'SURRENDER' | 'GAME_OVER' | 'PING';
+  type: 'JOIN_ROOM' | 'READY' | 'DEPLOY_UNIT' | 'USE_ABILITY' | 'COMBAT_START' | 'SYNC_DAMAGE' | 'SURRENDER' | 'GAME_OVER' | 'PING' | 'SYNC_SHOOTER_STATE' | 'SHOOT_BULLETS' | 'BULLET_HIT' | 'LOOT_TAKEN';
   senderId: number;
   payload: any;
   timestamp: number;
