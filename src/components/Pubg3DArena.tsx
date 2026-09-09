@@ -345,7 +345,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     scene.background = new THREE.Color(meta.fogColor);
 
     const env = buildMapEnvironment(mapId, scene);
-    const { obstacles, safeZone, lootItems, getHeightAt, ladders, explosives } = env;
+    const { obstacles, safeZone, lootItems, getHeightAt, ladders, explosives, lootLight } = env;
     const zoneBaseRadius = safeZone.radius;
     void explosives;
 
@@ -420,6 +420,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     let lastZoneDmg = 0;
     let lastHudSync = 0;
     let cameraShake = 0;
+    // Temp vectors/colours reused every frame (no per-frame allocation).
+    const lootColor = new THREE.Color();
+    const lootLightPos = new THREE.Vector3();
     // View-mode blend: 0 = fully first-person, 1 = fully third-person. Damped
     // toward the selected mode every frame so toggling is a smooth cinematic
     // dolly instead of an instant snap.
@@ -792,7 +795,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       }
       tgHaptics.notification('success');
       loot.isCollected = true;
-      loot.mesh.visible = false;
+      loot.setCollected(true);
       setNearbyLoot(null);
       lastLootRef.current = null;
       if (mode !== 'ai') multiplayer.sendLootTaken(loot.id);
@@ -839,7 +842,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           if (msg.payload.victimId === user.id) damagePlayer(msg.payload.damage, botSoldier.root.position);
         } else if (msg.type === 'LOOT_TAKEN') {
           const taken = lootItems.find((l) => l.id === msg.payload.lootId);
-          if (taken) { taken.isCollected = true; taken.mesh.visible = false; }
+          if (taken) { taken.isCollected = true; taken.setCollected(true); }
         } else if (msg.type === 'GAME_OVER') {
           if (msg.payload.winnerId === user.id) endMatch(true);
           else endMatch(false);
@@ -1700,13 +1703,28 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         if (hitmarkerT <= 0) setHitmarker(null);
       }
 
-      // ---- Loot proximity ----
+      // ---- Loot proximity + animation ----
       let nearLoot: LootItem3D | null = null;
       for (const loot of lootItems) {
         if (loot.isCollected) continue;
         loot.mesh.rotation.y += dt * 1.5;
-        if (loot.pulseLight) loot.pulseLight.intensity = 1.2 + Math.sin(now * 0.004) * 0.5;
-        if (p.pos.distanceTo(loot.pos) < 3.4) nearLoot = loot;
+        // Gentle hover bob keeps items feeling alive and easy to spot.
+        loot.mesh.position.y = loot.pos.y + Math.sin(now * 0.0022 + loot.pos.x * 0.13) * 0.08;
+        if (p.pos.distanceTo(loot.pos) < 3.6) nearLoot = loot;
+      }
+      // Shared loot light eases toward the nearest uncollected item, fading
+      // out when nothing is nearby — a premium touch without per-item lights.
+      if (lootLight) {
+        if (nearLoot) {
+          lootColor.set(nearLoot.colorHex);
+          lootLight.color.lerp(lootColor, dt * 8);
+          lootLight.intensity = THREE.MathUtils.lerp(lootLight.intensity, 5, dt * 8);
+          lootLightPos.copy(nearLoot.pos);
+          lootLightPos.y += 1.6;
+          lootLight.position.lerp(lootLightPos, dt * 8);
+        } else {
+          lootLight.intensity = THREE.MathUtils.lerp(lootLight.intensity, 0, dt * 6);
+        }
       }
       if (nearLoot !== lastLootRef.current) {
         lastLootRef.current = nearLoot;
@@ -2163,17 +2181,20 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         </div>
       )}
 
-      {/* Interact prompt */}
+      {/* Interact prompt — clear, glassy, and colour-matched to the item */}
       <AnimatePresence>
         {nearbyLoot && hud.phase === 'combat' && (
-          <motion.button initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 20 }}
+          <motion.button initial={{ opacity: 0, y: 24, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 24, scale: 0.9 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 26 }}
             onClick={() => engineRef.current?.interact()}
-            className="absolute bottom-40 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 bg-[#080b11]/85 backdrop-blur-xl border border-amber-300/40 rounded-2xl px-4 py-2.5 shadow-[0_0_30px_rgba(255,215,0,.15)]">
-            <span className="text-xl">{nearbyLoot.icon}</span>
+            className="absolute bottom-44 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 bg-[#080b11]/90 backdrop-blur-xl rounded-2xl pl-3 pr-4 py-2.5 pointer-events-auto"
+            style={{ border: `1px solid rgba(255,255,255,0.14)`, boxShadow: `0 0 26px ${nearbyLoot.colorHex ? '#' + nearbyLoot.colorHex.toString(16).padStart(6, '0') + '55' : 'rgba(255,215,0,0.18)'}` }}>
+            <span className="flex items-center justify-center w-11 h-11 rounded-xl text-2xl" style={{ background: `rgba(255,255,255,0.06)` }}>{nearbyLoot.icon}</span>
             <span className="text-right">
-              <span className="block text-[9px] font-bold tracking-widest text-amber-300">التقاط [F]</span>
+              <span className="block text-[9px] font-bold tracking-widest text-cyan-300">{isMobile ? 'اضغط للالتقاط' : 'التقاط [F]'}</span>
               <span className="block text-sm font-black text-white">{nearbyLoot.nameAr}</span>
             </span>
+            <span className="mr-1 w-6 h-6 rounded-full border-2 border-cyan-300/60 animate-pulse" />
           </motion.button>
         )}
       </AnimatePresence>

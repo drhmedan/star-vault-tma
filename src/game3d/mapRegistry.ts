@@ -1404,43 +1404,62 @@ function buildSky(scene: THREE.Scene, meta: MapMetadata, sunDir: THREE.Vector3) 
 }
 
 // ------------------------------------------------------------
-// Loot items — each item renders as 2 draw calls (marker ring + one
-// vertex-coloured body mesh) instead of 4-6.
+// Loot items — each item renders as ONE merged vertex-coloured body mesh. The
+// ground rings and the vertical light beams are shared across all items via
+// InstancedMesh (2 draw calls for the whole map), and a single shared point
+// light eases toward the nearest loot instead of one light per item. This
+// keeps loot highly visible on mobile without the GPU cost of per-item lights.
 // ------------------------------------------------------------
-const LOOT_BODY_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.4 });
+const LOOT_BODY_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.48, metalness: 0.35 });
+
+interface LootEffects {
+  rings: THREE.InstancedMesh;
+  beams: THREE.InstancedMesh;
+}
+
+function makeLootEffects(count: number): LootEffects {
+  const ringGeo = new THREE.RingGeometry(0.5, 0.74, 26);
+  const ringMat = new THREE.MeshBasicMaterial({
+    side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthWrite: false
+  });
+  const rings = new THREE.InstancedMesh(ringGeo, ringMat, count);
+  rings.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  rings.frustumCulled = false;
+
+  const beamGeo = new THREE.CylinderGeometry(0.09, 0.36, 6, 12, 1, true);
+  const beamMat = new THREE.MeshBasicMaterial({
+    transparent: true, opacity: 0.28, depthWrite: false,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide
+  });
+  const beams = new THREE.InstancedMesh(beamGeo, beamMat, count);
+  beams.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  beams.frustumCulled = false;
+
+  return { rings, beams };
+}
 
 function buildLootItem(
   scene: THREE.Scene, id: string, type: LootItem3D['type'],
   nameAr: string, icon: string, color: string, x: number, z: number,
   hFn: (x: number, z: number) => number,
+  effects: LootEffects, index: number,
   weaponType?: WeaponType, grenadeType?: GrenadeType
 ): LootItem3D {
   const group = new THREE.Group();
   const y = hFn(x, z);
-
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(0.55, 0.78, 20),
-    new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.9 })
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.04;
-  group.add(ring);
-
-  const pulse = new THREE.PointLight(color, 1.2, 5, 2);
-  pulse.position.y = 0.8;
-  group.add(pulse);
+  const col = new THREE.Color(color);
 
   // Collect every body part as a painted, world-transformed geometry, then
   // collapse them into a single vertex-coloured mesh.
   const pieces: THREE.BufferGeometry[] = [];
   const part = (geo: THREE.BufferGeometry, c: string, px = 0, py = 0, pz = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) => {
-    const col = new THREE.Color(c);
+    const pc = new THREE.Color(c);
     const cnt = geo.getAttribute('position').count;
     const arr = new Float32Array(cnt * 3);
     for (let i = 0; i < cnt; i++) {
-      arr[i * 3] = col.r;
-      arr[i * 3 + 1] = col.g;
-      arr[i * 3 + 2] = col.b;
+      arr[i * 3] = pc.r;
+      arr[i * 3 + 1] = pc.g;
+      arr[i * 3 + 2] = pc.b;
     }
     geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
     geo.applyMatrix4(new THREE.Matrix4().compose(
@@ -1452,24 +1471,49 @@ function buildLootItem(
   };
 
   if (weaponType === 'rpg') {
-    part(new THREE.CylinderGeometry(0.07, 0.07, 1.3, 8), '#2c5a34', 0, 0.3, 0, 0, 0, Math.PI / 2);
-    part(new THREE.ConeGeometry(0.15, 0.34, 8), '#9a3412', 0.74, 0.3, 0, 0, 0, -Math.PI / 2);
+    part(new THREE.CylinderGeometry(0.075, 0.075, 1.35, 10), '#2c5a34', 0, 0.3, 0, 0, 0, Math.PI / 2);
+    part(new THREE.ConeGeometry(0.16, 0.36, 10), '#9a3412', 0.78, 0.3, 0, 0, 0, -Math.PI / 2);
+    part(new THREE.CylinderGeometry(0.09, 0.09, 0.22, 10), '#1e293b', -0.72, 0.3, 0, 0, 0, Math.PI / 2);
+    part(new THREE.BoxGeometry(0.12, 0.16, 0.12), '#0f172a', 0.1, 0.5, 0);
   } else if (weaponType === 'awm' || weaponType === 'shotgun' || weaponType === 'mp5' || weaponType === 'ak47') {
-    part(new THREE.BoxGeometry(1.0, 0.16, 0.22), '#11151b', 0, 0.32, 0);
-    part(
-      new THREE.CylinderGeometry(0.03, 0.03, weaponType === 'awm' ? 1.3 : weaponType === 'shotgun' ? 1.1 : 0.9, 8),
-      '#0c1117', 0, 0.32, weaponType === 'awm' ? -0.95 : -0.7, Math.PI / 2, 0, 0
-    );
-    part(new THREE.CylinderGeometry(0.04, 0.04, 0.3, 8), '#0c1117', 0, 0.46, 0.2, Math.PI / 2, 0, 0);
-  } else if (type === 'medkit' || type === 'armor') {
-    part(new THREE.BoxGeometry(0.7, 0.5, 0.4), color, 0, 0.42, 0);
-    part(new THREE.BoxGeometry(0.16, 0.4, 0.06), '#ffffff', 0, 0.42, 0.22);
-    part(new THREE.BoxGeometry(0.4, 0.16, 0.06), '#ffffff', 0, 0.42, 0.22);
+    const long = weaponType === 'awm';
+    // Receiver + handguard
+    part(new THREE.BoxGeometry(long ? 1.15 : 0.95, 0.15, 0.16), '#141a22', 0, 0.3, 0);
+    // Barrel
+    part(new THREE.CylinderGeometry(0.028, 0.028, long ? 1.35 : 0.85, 8), '#0b1017',
+      0, 0.3, long ? -1.05 : -0.72, Math.PI / 2, 0, 0);
+    // Stock
+    part(new THREE.BoxGeometry(0.34, 0.13, 0.12), long ? '#2f2a1e' : '#1f2937', 0, 0.3, 0.62);
+    // Magazine (angled down)
+    part(new THREE.BoxGeometry(0.1, 0.24, 0.14), '#2b3440', 0.02, 0.16, 0.1, 0.18, 0, 0);
+    // Scope for the sniper
+    if (long) part(new THREE.CylinderGeometry(0.05, 0.05, 0.4, 10), '#0c1117', 0, 0.46, -0.1, Math.PI / 2, 0, 0);
+    // Grip
+    part(new THREE.BoxGeometry(0.08, 0.16, 0.1), '#1c2530', 0, 0.18, -0.28, 0.3, 0, 0);
+  } else if (type === 'medkit') {
+    part(new THREE.BoxGeometry(0.72, 0.5, 0.42), '#e2e8f0', 0, 0.42, 0);
+    // Red cross
+    part(new THREE.BoxGeometry(0.16, 0.34, 0.06), '#dc2626', 0, 0.42, 0.24);
+    part(new THREE.BoxGeometry(0.34, 0.16, 0.06), '#dc2626', 0, 0.42, 0.24);
+    // Handle
+    part(new THREE.CylinderGeometry(0.03, 0.03, 0.2, 8), '#64748b', 0, 0.74, 0, 0, 0, Math.PI / 2);
+  } else if (type === 'armor') {
+    part(new THREE.BoxGeometry(0.56, 0.62, 0.2), '#1d4ed8', 0, 0.5, 0);
+    part(new THREE.BoxGeometry(0.34, 0.3, 0.1), '#1e40af', -0.06, 0.5, 0.16);
+    part(new THREE.BoxGeometry(0.18, 0.4, 0.06), '#0f172a', -0.2, 0.55, 0.1);
+    part(new THREE.BoxGeometry(0.18, 0.4, 0.06), '#0f172a', 0.2, 0.55, 0.1);
+    part(new THREE.BoxGeometry(0.1, 0.1, 0.04), '#f8fafc', 0, 0.62, 0.11);
   } else if (type === 'grenade') {
-    part(new THREE.SphereGeometry(0.2, 10, 8), color, 0, 0.34, 0);
-    part(new THREE.CylinderGeometry(0.02, 0.02, 0.16, 6), '#fbbf24', 0, 0.55, 0);
+    part(new THREE.SphereGeometry(0.2, 12, 10), color, 0, 0.34, 0);
+    part(new THREE.CylinderGeometry(0.022, 0.022, 0.18, 6), '#b45309', 0, 0.56, 0);
+    part(new THREE.BoxGeometry(0.05, 0.1, 0.03), '#78350f', 0.06, 0.5, 0, 0.3, 0, 0);
   } else {
-    part(new THREE.BoxGeometry(0.55, 0.32, 0.32), color, 0, 0.36, 0);
+    // Ammo crate with a peek of brass tips.
+    part(new THREE.BoxGeometry(0.6, 0.34, 0.34), '#4b5563', 0, 0.36, 0);
+    part(new THREE.BoxGeometry(0.66, 0.1, 0.4), '#374151', 0, 0.2, 0);
+    part(new THREE.CylinderGeometry(0.03, 0.03, 0.16, 8), '#fbbf24', -0.12, 0.5, 0, 0, 0, Math.PI / 2);
+    part(new THREE.CylinderGeometry(0.03, 0.03, 0.16, 8), '#fbbf24', 0, 0.5, 0, 0, 0, Math.PI / 2);
+    part(new THREE.CylinderGeometry(0.03, 0.03, 0.16, 8), '#fbbf24', 0.12, 0.5, 0, 0, 0, Math.PI / 2);
   }
 
   const merged = mergeGeometries(pieces, false) ?? new THREE.BufferGeometry();
@@ -1480,9 +1524,30 @@ function buildLootItem(
   group.position.set(x, y, z);
   scene.add(group);
 
+  // Ground ring (instanced) — flat glowing disc marking the item.
+  const ringM = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+  ringM.setPosition(x, y + 0.06, z);
+  effects.rings.setMatrixAt(index, ringM);
+  effects.rings.setColorAt(index, col);
+
+  // Light beam (instanced) — a soft additive pillar rising above the item.
+  const beamM = new THREE.Matrix4().setPosition(x, y + 2.4, z);
+  effects.beams.setMatrixAt(index, beamM);
+  effects.beams.setColorAt(index, col);
+
+  const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+  const setCollected = (collected: boolean) => {
+    effects.rings.setMatrixAt(index, collected ? zero : ringM);
+    effects.beams.setMatrixAt(index, collected ? zero : beamM);
+    effects.rings.instanceMatrix.needsUpdate = true;
+    effects.beams.instanceMatrix.needsUpdate = true;
+    group.visible = !collected;
+  };
+
   return {
-    id, type, weaponType, grenadeType, nameAr, icon, mesh: group,
-    pos: new THREE.Vector3(x, y, z), isCollected: false, pulseLight: pulse
+    id, type, weaponType, grenadeType, nameAr, icon, colorHex: col.getHex(),
+    mesh: group, pos: new THREE.Vector3(x, y, z), isCollected: false,
+    setCollected
   };
 }
 
@@ -1606,11 +1671,17 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
   buildAtmosphere(scene, meta);
   buildSky(scene, meta, sunDir);
 
-  // Loot
+  // Loot — collect the spawn specs first so the instanced rings/beams can be
+  // sized to the exact item count.
+  interface LootSpec {
+    id: string; type: LootItem3D['type']; nameAr: string; icon: string; color: string;
+    x: number; z: number; weaponType?: WeaponType; grenadeType?: GrenadeType;
+  }
+  const lootSpecs: LootSpec[] = [];
   const loot = (
     id: string, type: LootItem3D['type'], nameAr: string, icon: string, color: string,
     x: number, z: number, weaponType?: WeaponType, grenadeType?: GrenadeType
-  ) => lootItems.push(buildLootItem(scene, id, type, nameAr, icon, color, x, z, getHeightAt, weaponType, grenadeType));
+  ) => lootSpecs.push({ id, type, nameAr, icon, color, x, z, weaponType, grenadeType });
 
   if (mapId === 'warzone') {
     loot('loot-awm-1', 'weapon', 'قناصة AWM الأسطورية', '🎯', '#10b981', 88, 88, 'awm');
@@ -1643,6 +1714,23 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
     loot('loot-nade-frag', 'grenade', 'قنبلة شظايا', '💣', '#f97316', 8, 4, undefined, 'frag');
   }
 
+  // Build the loot: one merged body mesh per item + shared instanced rings and
+  // beams (2 draw calls) + a single shared light that eases to the nearest item.
+  const lootEffects = makeLootEffects(lootSpecs.length);
+  scene.add(lootEffects.rings, lootEffects.beams);
+  lootSpecs.forEach((s, i) => {
+    lootItems.push(buildLootItem(scene, s.id, s.type, s.nameAr, s.icon, s.color, s.x, s.z, getHeightAt, lootEffects, i, s.weaponType, s.grenadeType));
+  });
+  // Upload the initial instance matrices/colours once.
+  lootEffects.rings.instanceMatrix.needsUpdate = true;
+  lootEffects.beams.instanceMatrix.needsUpdate = true;
+  if (lootEffects.rings.instanceColor) lootEffects.rings.instanceColor.needsUpdate = true;
+  if (lootEffects.beams.instanceColor) lootEffects.beams.instanceColor.needsUpdate = true;
+
+  const lootLight = new THREE.PointLight(0x9be8ff, 0, 9, 2);
+  lootLight.position.set(0, 2, 0);
+  scene.add(lootLight);
+
   // Safe zone
   const zoneRadius = mapId === 'warzone' ? 142 : 80;
   const zoneGeo = new THREE.CylinderGeometry(zoneRadius, zoneRadius, 60, 56, 1, true);
@@ -1670,6 +1758,6 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
   return {
     obstacles, safeZone, lootItems, getHeightAt, spawnA, spawnB,
     bounds, sunDirection: sunDir, mapId, colliders: obstacles,
-    ladders, explosives
+    ladders, explosives, lootLight
   };
 }

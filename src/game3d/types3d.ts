@@ -57,10 +57,12 @@ export interface LootItem3D {
   grenadeType?: GrenadeType;
   nameAr: string;
   icon: string;
+  colorHex: number;
   mesh: THREE.Group;
   pos: THREE.Vector3;
   isCollected: boolean;
-  pulseLight?: THREE.PointLight;
+  /** Hides the body, ground ring and light beam in one call. */
+  setCollected: (collected: boolean) => void;
 }
 
 export interface CoverObstacle3D {
@@ -131,6 +133,8 @@ export interface MapEnvironment {
   ladders: Ladder3D[];
   // Shootable explosive props.
   explosives: CoverObstacle3D[];
+  // Single shared light that eases toward the nearest uncollected loot item.
+  lootLight?: THREE.PointLight;
 }
 
 // ============================================================
