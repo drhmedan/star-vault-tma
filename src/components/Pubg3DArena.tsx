@@ -404,7 +404,30 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         playerSoldier.head.position.y = 1.95;
       }
 
-      // 4. CAMERA VIEW CONTROLLER: TPP vs FPP (Dynamic Switch)
+      // 4. Procedural operator kinematics: opposing gait phases, weight shift, crouch/prone geometry, and spring recoil.
+      const rig = playerSoldier.rig;
+      const gaitSpeed = isProne ? 4.2 : sprintRef.current ? 13 : isCrouchedRef.current ? 7 : 9;
+      const gait = clock.elapsedTime * gaitSpeed;
+      const stride = moving ? Math.sin(gait) : 0;
+      const strideOpposite = moving ? Math.sin(gait + Math.PI) : 0;
+      const crouchBlend = isCrouchedRef.current ? 1 : 0;
+      const proneBlend = isProne ? 1 : 0;
+      const targetRootX = proneBlend * -Math.PI * 0.47 + crouchBlend * 0.08;
+      playerSoldier.root.rotation.x += (targetRootX - playerSoldier.root.rotation.x) * Math.min(1, delta * 12);
+      playerSoldier.root.position.y = pos.y + (proneBlend ? 0.22 : crouchBlend ? -0.18 : 0);
+      playerSoldier.torso.rotation.x = THREE.MathUtils.lerp(playerSoldier.torso.rotation.x, (sprintRef.current ? -0.18 : 0) + pitch * 0.16, delta * 8);
+      playerSoldier.torso.position.y = THREE.MathUtils.lerp(playerSoldier.torso.position.y, proneBlend ? 0.56 : crouchBlend ? 0.82 : 1.23 + Math.abs(stride) * (moving ? 0.045 : 0), delta * 10);
+      rig.leftLeg.rotation.x = THREE.MathUtils.lerp(rig.leftLeg.rotation.x, proneBlend ? 0.18 : crouchBlend ? -0.72 + stride * 0.08 : strideOpposite * 0.52, delta * 14);
+      rig.rightLeg.rotation.x = THREE.MathUtils.lerp(rig.rightLeg.rotation.x, proneBlend ? -0.18 : crouchBlend ? -0.72 + strideOpposite * 0.08 : stride * 0.52, delta * 14);
+      rig.leftArm.rotation.x = THREE.MathUtils.lerp(rig.leftArm.rotation.x, proneBlend ? -0.9 : -0.2 - strideOpposite * 0.32, delta * 14);
+      rig.rightArm.rotation.x = THREE.MathUtils.lerp(rig.rightArm.rotation.x, proneBlend ? -0.9 : -0.2 - stride * 0.32, delta * 14);
+      rig.leftArm.rotation.z = THREE.MathUtils.lerp(rig.leftArm.rotation.z, pitch * 0.22, delta * 10);
+      rig.rightArm.rotation.z = THREE.MathUtils.lerp(rig.rightArm.rotation.z, -pitch * 0.22, delta * 10);
+      const recoilTarget = isFiringRef.current ? -0.12 : 0;
+      rig.recoil.position.z += (0.45 + recoilTarget - rig.recoil.position.z) * Math.min(1, delta * 18);
+      playerSoldier.muzzleLight.intensity = THREE.MathUtils.lerp(playerSoldier.muzzleLight.intensity, isFiringRef.current ? 4 : 0, delta * 24);
+
+      // 5. CAMERA VIEW CONTROLLER: TPP vs FPP (Dynamic Switch)
       const crouchOffset = isCrouchedRef.current ? -0.4 : 0;
       const aimZoom = isAimingRef.current ? 0.45 : 1.0;
 

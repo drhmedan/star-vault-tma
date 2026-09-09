@@ -206,93 +206,51 @@ export function buildBattlefieldWorld(scene: THREE.Scene): {
   return { obstacles, safeZone, ground };
 }
 
-// Build 3D Soldier Model (Torso, Helmet, Backpack, Arms, Gun)
+// Build a lightweight segmented tactical operator. Named pivots expose the rig to the 60 FPS animation loop.
 export function createSoldierMesh(isEnemy: boolean = false): {
   root: THREE.Group;
   torso: THREE.Mesh;
   head: THREE.Mesh;
   gun: THREE.Mesh;
   muzzleLight: THREE.PointLight;
+  rig: { leftLeg: THREE.Group; rightLeg: THREE.Group; leftArm: THREE.Group; rightArm: THREE.Group; recoil: THREE.Group };
 } {
   const root = new THREE.Group();
+  const accent = isEnemy ? '#f43f5e' : '#22d3ee';
+  const camo = isEnemy ? '#5b2930' : '#243746';
+  const dark = new THREE.MeshStandardMaterial({ color: '#111827', roughness: 0.72 });
+  const fabric = new THREE.MeshStandardMaterial({ color: camo, roughness: 0.9 });
+  const accentMat = new THREE.MeshStandardMaterial({ color: accent, roughness: 0.4, metalness: 0.35 });
+  const glass = new THREE.MeshStandardMaterial({ color: '#9be7ef', emissive: '#075985', emissiveIntensity: 0.35, metalness: 0.8, roughness: 0.12 });
+  const add = (mesh: THREE.Mesh, parent: THREE.Object3D = root) => { mesh.castShadow = true; mesh.receiveShadow = true; parent.add(mesh); return mesh; };
+  const box = (size: [number, number, number], material: THREE.Material) => new THREE.Mesh(new THREE.BoxGeometry(...size), material);
+  const torso = add(box([0.72, 0.82, 0.44], dark)); torso.position.y = 1.23;
+  const plate = add(box([0.58, 0.52, 0.08], accentMat)); plate.position.set(0, 1.28, 0.25);
+  for (let i = -1; i <= 1; i++) { const pouch = add(box([0.16, 0.18, 0.12], dark)); pouch.position.set(i * 0.19, 1.02, 0.28); const mag = add(box([0.07, 0.12, 0.04], accentMat)); mag.position.set(i * 0.19, 1.12, 0.34); }
+  const shoulder = add(box([0.9, 0.12, 0.28], fabric)); shoulder.position.y = 1.58;
+  const pack = add(box([0.62, 0.76, 0.32], fabric)); pack.position.set(0, 1.25, -0.36);
+  const roll = add(new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.72, 10), dark)); roll.rotation.z = Math.PI / 2; roll.position.set(0, 0.72, -0.37);
+  for (const x of [-0.28, 0.28]) { const strap = add(box([0.06, 0.64, 0.05], accentMat)); strap.position.set(x, 1.28, -0.55); }
 
-  // Color theme
-  const suitColor = isEnemy ? '#991b1b' : '#0284c7';
-  const vestColor = '#1e293b';
-  const skinColor = '#e2b596';
+  const head = add(new THREE.Mesh(new THREE.SphereGeometry(0.24, 16, 12), fabric)); head.position.y = 1.96;
+  const helmet = add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.62), dark)); helmet.position.y = 2.03;
+  const goggles = add(box([0.34, 0.09, 0.055], glass)); goggles.position.set(0, 1.95, 0.22);
+  const nvg = add(box([0.08, 0.16, 0.08], accentMat)); nvg.position.set(0, 2.08, 0.27);
+  const antenna = add(new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.55, 6), accentMat)); antenna.position.set(0.42, 1.7, 0); antenna.rotation.z = -0.18;
 
-  // 1. Torso with Tactical Vest
-  const torsoGeo = new THREE.BoxGeometry(0.7, 0.9, 0.45);
-  const torsoMat = new THREE.MeshStandardMaterial({ color: vestColor, roughness: 0.7 });
-  const torso = new THREE.Mesh(torsoGeo, torsoMat);
-  torso.position.y = 1.25;
-  torso.castShadow = true;
-  root.add(torso);
+  const leftLeg = new THREE.Group(); const rightLeg = new THREE.Group(); leftLeg.position.set(-0.2, 0.82, 0); rightLeg.position.set(0.2, 0.82, 0); root.add(leftLeg, rightLeg);
+  for (const [pivot, x] of [[leftLeg, -0.2], [rightLeg, 0.2]] as const) { const thigh = add(box([0.25, 0.68, 0.28], fabric), pivot); thigh.position.y = -0.34; const knee = add(new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), dark), pivot); knee.position.set(0, -0.7, 0.02); const boot = add(box([0.3, 0.22, 0.46], dark), pivot); boot.position.set(0, -0.92, 0.08); }
+  const leftArm = new THREE.Group(); const rightArm = new THREE.Group(); leftArm.position.set(-0.48, 1.5, 0.03); rightArm.position.set(0.48, 1.5, 0.03); root.add(leftArm, rightArm);
+  for (const arm of [leftArm, rightArm]) { const upper = add(box([0.2, 0.48, 0.22], fabric), arm); upper.position.y = -0.25; const elbow = add(new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), dark), arm); elbow.position.y = -0.53; const glove = add(box([0.22, 0.2, 0.25], dark), arm); glove.position.y = -0.72; }
 
-  // 2. Tactical Backpack (Military Ruck)
-  const packGeo = new THREE.BoxGeometry(0.55, 0.7, 0.35);
-  const packMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.9 });
-  const pack = new THREE.Mesh(packGeo, packMat);
-  pack.position.set(0, 1.3, -0.32);
-  pack.castShadow = true;
-  root.add(pack);
-
-  // 3. Head & Military Helmet (L3 Spetsnaz / Military pot helmet)
-  const headGeo = new THREE.SphereGeometry(0.24, 16, 16);
-  const headMat = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.5 });
-  const head = new THREE.Mesh(headGeo, headMat);
-  head.position.y = 1.95;
-  head.castShadow = true;
-  root.add(head);
-
-  // Helmet shell
-  const helmetGeo = new THREE.SphereGeometry(0.26, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.6);
-  const helmetMat = new THREE.MeshStandardMaterial({ color: isEnemy ? '#7f1d1d' : '#0369a1', roughness: 0.4, metalness: 0.3 });
-  const helmet = new THREE.Mesh(helmetGeo, helmetMat);
-  helmet.position.y = 1.98;
-  helmet.castShadow = true;
-  root.add(helmet);
-
-  // 4. Legs
-  const legMat = new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.8 });
-  const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.8, 0.3), legMat);
-  leftLeg.position.set(-0.2, 0.4, 0);
-  leftLeg.castShadow = true;
-  root.add(leftLeg);
-
-  const rightLeg = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.8, 0.3), legMat);
-  rightLeg.position.set(0.2, 0.4, 0);
-  rightLeg.castShadow = true;
-  root.add(rightLeg);
-
-  // 5. 3D Assault Rifle (Held pointing forward)
-  const gunGroup = new THREE.Group();
-  const gunMat = new THREE.MeshStandardMaterial({ color: '#18181b', roughness: 0.3, metalness: 0.8 });
-  
-  // Barrel & Receiver
-  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, 0.9), gunMat);
-  receiver.castShadow = true;
-  gunGroup.add(receiver);
-
-  // Magazine
-  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.22, 0.12), gunMat);
-  mag.position.set(0, -0.15, 0.1);
-  mag.rotation.x = 0.2;
-  gunGroup.add(mag);
-
-  // Scope / Sight
-  const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.3, 8), gunMat);
-  scope.rotation.x = Math.PI / 2;
-  scope.position.set(0, 0.12, 0.05);
-  gunGroup.add(scope);
-
-  gunGroup.position.set(0.35, 1.25, 0.55);
-  root.add(gunGroup);
-
-  // 6. Muzzle Flash Light
-  const muzzleLight = new THREE.PointLight('#fef08a', 0, 8);
-  muzzleLight.position.set(0.35, 1.25, 1.1);
-  root.add(muzzleLight);
-
-  return { root, torso, head, gun: receiver, muzzleLight };
+  const recoil = new THREE.Group(); root.add(recoil); const gunMat = new THREE.MeshStandardMaterial({ color: '#0b1120', roughness: 0.28, metalness: 0.82 });
+  const receiver = add(box([0.13, 0.15, 0.7], gunMat), recoil); receiver.position.set(0, 0, 0.35);
+  const barrel = add(new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.8, 10), gunMat), recoil); barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0, 1.05);
+  const gasTube = add(new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.55, 8), accentMat), recoil); gasTube.rotation.x = Math.PI / 2; gasTube.position.set(0, 0.1, 0.55);
+  const magazine = add(new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 0.3, 10), fabric), recoil); magazine.position.set(0, -0.2, 0.28); magazine.rotation.x = 0.28;
+  const stock = add(box([0.18, 0.16, 0.42], fabric), recoil); stock.position.set(0, 0, -0.25);
+  const optic = add(new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.3, 10), glass), recoil); optic.rotation.x = Math.PI / 2; optic.position.set(0, 0.14, 0.3);
+  recoil.position.set(0.28, 1.28, 0.45);
+  const muzzleLight = new THREE.PointLight('#fef08a', 0, 8); muzzleLight.position.set(0.28, 1.28, 1.75); root.add(muzzleLight);
+  return { root, torso, head, gun: receiver, muzzleLight, rig: { leftLeg, rightLeg, leftArm, rightArm, recoil } };
 }
