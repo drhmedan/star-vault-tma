@@ -72,9 +72,10 @@ export function buildMapEnvironment(
   sunLight.shadow.camera.bottom = -130;
   scene.add(sunLight);
 
-  // 2. Ground Terrain
-  const groundGeo = new THREE.PlaneGeometry(350, 350, 32, 32);
-  const groundColor = mapId === 'desert' ? '#b45309' : '#2e3828';
+  // 2. Ground Terrain — vertex-displaced for warzone to create hills & dips
+  const groundSubdivs = mapId === 'warzone' ? 96 : 32;
+  const groundGeo = new THREE.PlaneGeometry(350, 350, groundSubdivs, groundSubdivs);
+  const groundColor = mapId === 'desert' ? '#b45309' : mapId === 'warzone' ? '#2a3320' : '#2e3828';
   const groundMat = new THREE.MeshStandardMaterial({
     color: groundColor,
     roughness: 0.95,
@@ -84,6 +85,57 @@ export function buildMapEnvironment(
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
+
+  // Warzone terrain: displace vertices to create gentle rolling hills
+  if (mapId === 'warzone') {
+    const posAttr = groundGeo.getAttribute('position');
+    for (let i = 0; i < posAttr.count; i++) {
+      const x = posAttr.getX(i);
+      const y = posAttr.getY(i);
+      // Perlin-like noise approximation using layered sine waves
+      const h = Math.sin(x * 0.035) * Math.cos(y * 0.04) * 2.5
+              + Math.sin(x * 0.08 + 1.5) * Math.cos(y * 0.06 - 0.7) * 1.2
+              + Math.sin(x * 0.15 + y * 0.12) * 0.5;
+      // Flatten near center (road/building area) — within 20m of center axis
+      const flattenFactor = Math.min(1, Math.max(0, (Math.abs(x) - 20) / 15));
+      posAttr.setZ(i, h * flattenFactor);
+    }
+    posAttr.needsUpdate = true;
+    groundGeo.computeVertexNormals();
+
+    // Scattered rocks and dirt mounds for visual richness
+    const rockMat = new THREE.MeshStandardMaterial({ color: '#4a4a40', roughness: 0.92 });
+    const dirtMat = new THREE.MeshStandardMaterial({ color: '#3a3520', roughness: 1.0 });
+    for (let i = 0; i < 40; i++) {
+      const rx = (Math.random() - 0.5) * 260;
+      const rz = (Math.random() - 0.5) * 260;
+      if (Math.abs(rx) < 15) continue; // Skip road area
+      const size = 0.4 + Math.random() * 1.2;
+      const rock = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(size, 0),
+        Math.random() > 0.5 ? rockMat : dirtMat
+      );
+      rock.position.set(rx, size * 0.3, rz);
+      rock.rotation.set(Math.random(), Math.random(), Math.random());
+      rock.castShadow = true;
+      scene.add(rock);
+    }
+
+    // Grass tuft clusters
+    const grassMat = new THREE.MeshStandardMaterial({ color: '#3a5a2a', roughness: 0.9 });
+    for (let i = 0; i < 60; i++) {
+      const gx = (Math.random() - 0.5) * 240;
+      const gz = (Math.random() - 0.5) * 240;
+      if (Math.abs(gx) < 12) continue;
+      const tuft = new THREE.Mesh(
+        new THREE.ConeGeometry(0.15 + Math.random() * 0.2, 0.6 + Math.random() * 0.4, 4),
+        grassMat
+      );
+      tuft.position.set(gx, 0.2, gz);
+      scene.add(tuft);
+    }
+  }
+
 
   if (mapId === 'warehouse') {
     // ==================== E R A N G E L   W A R E H O U S E ====================
@@ -342,11 +394,79 @@ export function buildMapEnvironment(
     scene.add(jeepNorth);
     obstacles.push({ mesh: jeepNorth, box: new THREE.Box3().setFromObject(jeepNorth), type: 'car' });
 
-    // Natural Pine Trees on the perimeter to enclose the map realistically
+    // Destroyed 2-Story Building Ruins (West side — provides multi-level cover)
+    const ruins = new THREE.Group();
+    const ruinMat = new THREE.MeshStandardMaterial({ color: '#6b7280', roughness: 0.95 });
+    // Standing walls
+    const rw1 = new THREE.Mesh(new THREE.BoxGeometry(12, 6, 0.6), ruinMat);
+    rw1.position.set(0, 3, -5); rw1.castShadow = true; ruins.add(rw1);
+    const rw2 = new THREE.Mesh(new THREE.BoxGeometry(0.6, 6, 10), ruinMat);
+    rw2.position.set(-5.7, 3, 0); rw2.castShadow = true; ruins.add(rw2);
+    // Collapsed wall section (angled debris)
+    const rw3 = new THREE.Mesh(new THREE.BoxGeometry(8, 4, 0.6), ruinMat);
+    rw3.position.set(2, 1.5, 4.5); rw3.rotation.x = 0.4; rw3.castShadow = true; ruins.add(rw3);
+    // Floor slab at 2nd story height (sniper perch)
+    const rFloor = new THREE.Mesh(new THREE.BoxGeometry(11, 0.25, 9), ruinMat);
+    rFloor.position.y = 5.8; rFloor.castShadow = true; ruins.add(rFloor);
+    // Rubble pile
+    for (let ri = 0; ri < 8; ri++) {
+      const rubble = new THREE.Mesh(
+        new THREE.BoxGeometry(0.8 + Math.random(), 0.5 + Math.random() * 0.8, 0.8 + Math.random()),
+        ruinMat
+      );
+      rubble.position.set((Math.random() - 0.5) * 8, Math.random() * 0.6, (Math.random() - 0.5) * 6);
+      rubble.rotation.set(Math.random(), Math.random(), Math.random());
+      ruins.add(rubble);
+    }
+    ruins.position.set(-50, 0, 0);
+    ruins.traverse((c) => { if (c instanceof THREE.Mesh) c.castShadow = true; });
+    scene.add(ruins);
+    obstacles.push({ mesh: ruins, box: new THREE.Box3(new THREE.Vector3(-58, 0, -6), new THREE.Vector3(-42, 6, 6)), type: 'building' });
+
+    // Sandbag Emplacements — circular defensive positions
+    [[-15, 45], [15, -45], [40, 15], [-40, -15]].forEach(([sx, sz]) => {
+      const sandbagGroup = new THREE.Group();
+      const sbMat = new THREE.MeshStandardMaterial({ color: '#8b7355', roughness: 0.98 });
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+        const bag = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.9, 0.7), sbMat);
+        bag.position.set(Math.cos(a) * 3, 0.45, Math.sin(a) * 3);
+        bag.rotation.y = a;
+        bag.castShadow = true;
+        sandbagGroup.add(bag);
+      }
+      sandbagGroup.position.set(sx, 0, sz);
+      scene.add(sandbagGroup);
+      obstacles.push({ mesh: sandbagGroup, box: new THREE.Box3().setFromObject(sandbagGroup), type: 'building' });
+    });
+
+    // Underground Bunker Entrance (East side — half-buried concrete structure)
+    const bunker = new THREE.Group();
+    const bunkerMat = new THREE.MeshStandardMaterial({ color: '#4b5563', roughness: 0.92 });
+    const bRoof = new THREE.Mesh(new THREE.BoxGeometry(10, 0.5, 8), bunkerMat);
+    bRoof.position.set(0, 1.8, 0); bRoof.castShadow = true; bunker.add(bRoof);
+    [-4.5, 4.5].forEach(x => {
+      const bWall = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2.2, 7), bunkerMat);
+      bWall.position.set(x, 0.9, 0); bWall.castShadow = true; bunker.add(bWall);
+    });
+    // Entrance opening — no back wall for gameplay flow
+    const bBack = new THREE.Mesh(new THREE.BoxGeometry(9, 2.2, 0.5), bunkerMat);
+    bBack.position.set(0, 0.9, -3.5); bBack.castShadow = true; bunker.add(bBack);
+    // Dirt mound over top
+    const bDirt = new THREE.Mesh(new THREE.BoxGeometry(12, 1.5, 10), new THREE.MeshStandardMaterial({ color: '#3a3520', roughness: 1 }));
+    bDirt.position.set(0, 2.5, 0); bDirt.castShadow = true; bunker.add(bDirt);
+    bunker.position.set(50, -0.5, 15);
+    scene.add(bunker);
+    obstacles.push({ mesh: bunker, box: new THREE.Box3().setFromObject(bunker), type: 'building' });
+
+    // More scattered trees across the map (not just perimeter)
     const pinePositions = [
       [-65, 45], [-60, 65], [-45, 80], [45, 75], [65, 55],
       [-65, -45], [-55, -68], [-40, -82], [45, -75], [65, -55],
-      [-75, 0], [75, 0], [-2, 85], [2, -85]
+      [-75, 0], [75, 0], [-2, 85], [2, -85],
+      // Interior scattered trees for cover
+      [-30, 20], [30, -20], [-20, -35], [20, 35],
+      [-45, 10], [45, -10], [-10, 60], [10, -60],
+      [-55, 30], [55, -30], [-35, -55], [35, 55]
     ];
     pinePositions.forEach(([px, pz]) => {
       const tree = createPineTree();
@@ -355,6 +475,7 @@ export function buildMapEnvironment(
       obstacles.push({ mesh: tree, box: new THREE.Box3().setFromObject(tree), type: 'tree' });
     });
   }
+
 
   // 3. 3D Ground Loot Generation (AWM Sniper, Shotgun, Ammo, Medkits)
   const lootConfigs: Array<{

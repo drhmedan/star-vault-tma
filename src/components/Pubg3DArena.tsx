@@ -32,7 +32,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   roomCode,
   mode,
   stakeStars,
-  mapId = 'warehouse',
+  mapId = 'warzone',
   onExit,
   onMatchComplete
 }) => {
@@ -668,76 +668,136 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         takeDamage(6);
       }
 
-      // 7. Tactical AI Opponent Simulation (Aggressive Hunting, Flanking, Animated Limbs & Tracer Firing)
+      // 7. Tactical AI Opponent — Aggressive Combat AI with Cover, Flanking, Burst Fire & Grenades
       if (mode === 'ai' && opponentHpRef.current > 0) {
         const oppPos = opponentPosRef.current;
         const dist = oppPos.distanceTo(pos);
         const targetAngle = Math.atan2(pos.x - oppPos.x, pos.z - oppPos.z);
-        
-        // Smooth rotation to aim at player
+
+        // Initialize AI state on first frame
+        if (!opponentSoldier.root.userData.aiState) {
+          opponentSoldier.root.userData.aiState = 'hunt';
+          opponentSoldier.root.userData.lastStateChange = now;
+          opponentSoldier.root.userData.dodgeDir = 1;
+          opponentSoldier.root.userData.burstCount = 0;
+          opponentSoldier.root.userData.lastFireTime = now;
+          opponentSoldier.root.userData.lastGrenadeTime = now - 8000;
+        }
+
+        const aiData = opponentSoldier.root.userData;
+        const aiHpPct = opponentHpRef.current / 100;
+
+        // State machine: hunt → engage → flank → dodge (cycle every few seconds)
+        const timeSinceStateChange = now - aiData.lastStateChange;
+        if (timeSinceStateChange > (2000 + Math.random() * 2000)) {
+          aiData.lastStateChange = now;
+          aiData.dodgeDir *= -1; // Flip dodge direction
+          if (dist > 45) {
+            aiData.aiState = 'hunt';
+          } else if (dist > 18) {
+            aiData.aiState = Math.random() > 0.4 ? 'flank' : 'engage';
+          } else {
+            aiData.aiState = aiHpPct < 0.35 ? 'retreat_fire' : 'close_assault';
+          }
+        }
+
+        // Smooth rotation to aim at player — faster when close
+        const rotSpeed = dist < 15 ? 16 : 10;
         opponentSoldier.root.rotation.y = THREE.MathUtils.lerp(
           opponentSoldier.root.rotation.y,
           targetAngle,
-          Math.min(1, delta * 12)
+          Math.min(1, delta * rotSpeed)
         );
 
-        // Tactical Movement: Hunt -> Strafe -> Circle
-        let aiSpeed = 5.2;
-        if (dist > 35) {
-          // Hunt & Sprint across map
-          aiSpeed = 6.2;
-          oppPos.x += Math.sin(targetAngle) * aiSpeed * delta;
-          oppPos.z += Math.cos(targetAngle) * aiSpeed * delta;
-        } else if (dist > 12) {
-          // Combat Strafe & Flank
-          aiSpeed = 4.5;
-          const strafeAngle = targetAngle + Math.sin(clock.elapsedTime * 2.8) * 1.1;
-          oppPos.x += Math.sin(strafeAngle) * aiSpeed * delta;
-          oppPos.z += Math.cos(strafeAngle) * aiSpeed * delta;
-        } else {
-          // Close quarters aggressive circle
-          aiSpeed = 4.8;
-          const circleAngle = targetAngle + Math.PI / 2;
-          oppPos.x += Math.sin(circleAngle) * aiSpeed * delta;
-          oppPos.z += Math.cos(circleAngle) * aiSpeed * delta;
+        // Movement based on AI state
+        let aiSpeed: number;
+        let moveAngle: number;
+        switch (aiData.aiState) {
+          case 'hunt':
+            // Sprint directly toward player
+            aiSpeed = 7.0;
+            moveAngle = targetAngle;
+            break;
+          case 'engage':
+            // Move toward player with slight lateral offset
+            aiSpeed = 4.8;
+            moveAngle = targetAngle + aiData.dodgeDir * 0.35;
+            break;
+          case 'flank':
+            // Wide arc around player to attack from side
+            aiSpeed = 5.5;
+            moveAngle = targetAngle + aiData.dodgeDir * (Math.PI * 0.38);
+            break;
+          case 'close_assault':
+            // Aggressive circling with unpredictable direction changes
+            aiSpeed = 5.2;
+            moveAngle = targetAngle + (Math.PI / 2) * aiData.dodgeDir
+              + Math.sin(clock.elapsedTime * 4.5) * 0.6;
+            break;
+          case 'retreat_fire':
+            // Back away while shooting — low HP survival mode
+            aiSpeed = 4.0;
+            moveAngle = targetAngle + Math.PI + aiData.dodgeDir * 0.5;
+            break;
+          default:
+            aiSpeed = 5.0;
+            moveAngle = targetAngle;
         }
+
+        // Random micro-dodges to avoid being an easy target
+        if (dist < 40 && Math.sin(clock.elapsedTime * 7) > 0.7) {
+          moveAngle += aiData.dodgeDir * 0.8;
+        }
+
+        oppPos.x += Math.sin(moveAngle) * aiSpeed * delta;
+        oppPos.z += Math.cos(moveAngle) * aiSpeed * delta;
 
         // Clamp inside arena bounds
-        oppPos.x = Math.max(-140, Math.min(140, oppPos.x));
-        oppPos.z = Math.max(-140, Math.min(140, oppPos.z));
+        oppPos.x = Math.max(-130, Math.min(130, oppPos.x));
+        oppPos.z = Math.max(-130, Math.min(130, oppPos.z));
         opponentSoldier.root.position.copy(oppPos);
 
-        // Animate AI Bot limbs (Gait Stride) so it moves like a real soldier
+        // Animate AI Bot limbs — faster stride when sprinting
         const oppRig = opponentSoldier.rig;
         if (oppRig) {
-          const aiGait = clock.elapsedTime * 11;
-          const aiStride = Math.sin(aiGait) * 0.48;
-          const aiStrideOpposite = Math.sin(aiGait + Math.PI) * 0.48;
+          const gaitSpeed = aiSpeed > 5.5 ? 14 : 10;
+          const aiGait = clock.elapsedTime * gaitSpeed;
+          const aiStride = Math.sin(aiGait) * 0.55;
+          const aiStrideOpp = Math.sin(aiGait + Math.PI) * 0.55;
           oppRig.leftLeg.rotation.x = aiStride;
-          oppRig.rightLeg.rotation.x = aiStrideOpposite;
-          oppRig.leftArm.rotation.x = -0.2 - aiStrideOpposite * 0.3;
-          oppRig.rightArm.rotation.x = -0.2 - aiStride * 0.3;
+          oppRig.rightLeg.rotation.x = aiStrideOpp;
+          oppRig.leftArm.rotation.x = -0.25 - aiStrideOpp * 0.35;
+          oppRig.rightArm.rotation.x = -0.25 - aiStride * 0.35;
         }
 
-        // Tactical AI Firing (Bursts every 340ms when within 65m)
-        if (!opponentSoldier.root.userData.lastFireTime) {
-          opponentSoldier.root.userData.lastFireTime = now;
-        }
+        // AI FIRING — Burst fire with varying intervals based on distance
+        const fireInterval = dist < 12 ? 180 : dist < 30 ? 280 : 400;
 
-        if (dist < 65 && now - opponentSoldier.root.userData.lastFireTime > 340) {
-          opponentSoldier.root.userData.lastFireTime = now;
+        if (dist < 75 && now - aiData.lastFireTime > fireInterval) {
+          aiData.lastFireTime = now;
+          aiData.burstCount++;
+
+          // Burst of 3-5 shots then short cooldown
+          if (aiData.burstCount > (3 + Math.floor(Math.random() * 3))) {
+            aiData.burstCount = 0;
+            aiData.lastFireTime = now + 600 + Math.random() * 400; // Cooldown between bursts
+          }
 
           // Muzzle Flash
-          opponentSoldier.muzzleLight.intensity = 5;
-          setTimeout(() => (opponentSoldier.muzzleLight.intensity = 0), 60);
+          opponentSoldier.muzzleLight.intensity = 6;
+          setTimeout(() => (opponentSoldier.muzzleLight.intensity = 0), 55);
           sound.playGunshot('ak47');
 
           // Visible Red Bullet Tracer from AI to Player
           const aiMuzzlePos = oppPos.clone().add(new THREE.Vector3(0, 1.3, 0));
+          // AI accuracy improves when closer and player is not crouching
+          const spread = isCrouchedRef.current
+            ? (dist < 15 ? 1.0 : 2.2)
+            : (dist < 15 ? 0.4 : 1.0);
           const aimTarget = pos.clone().add(new THREE.Vector3(
-            (Math.random() - 0.5) * (isCrouchedRef.current ? 1.8 : 0.8),
-            isCrouchedRef.current ? 0.6 : 1.2,
-            (Math.random() - 0.5) * (isCrouchedRef.current ? 1.8 : 0.8)
+            (Math.random() - 0.5) * spread,
+            isCrouchedRef.current ? 0.5 : 1.2 + (Math.random() - 0.5) * 0.3,
+            (Math.random() - 0.5) * spread
           ));
           const tracerGeo = new THREE.BufferGeometry().setFromPoints([aiMuzzlePos, aimTarget]);
           const tracerMat = new THREE.LineBasicMaterial({ color: '#f87171', transparent: true, opacity: 0.95 });
@@ -747,15 +807,53 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
             scene.remove(aiTracer);
             tracerGeo.dispose();
             tracerMat.dispose();
-          }, 90);
+          }, 85);
 
-          // Calculate Damage with crouch protection
-          const hitChance = isCrouchedRef.current ? 0.22 : 0.48;
-          if (Math.random() < hitChance) {
-            takeDamage(Math.floor(Math.random() * 8 + 12));
+          // Hit calculation — AI is more accurate up close, less when player crouches
+          const baseHitChance = isCrouchedRef.current ? 0.18 : 0.42;
+          const distMod = dist < 15 ? 1.3 : dist < 30 ? 1.0 : 0.7;
+          if (Math.random() < baseHitChance * distMod) {
+            const dmg = Math.floor(Math.random() * 10 + 10);
+            takeDamage(dmg);
+            // Camera punch on hit
+            cameraShakeRef.current = Math.max(cameraShakeRef.current, 0.12);
           }
         }
+
+        // AI GRENADE — throws one every 10-15s when in mid-range
+        if (dist > 8 && dist < 35 && now - aiData.lastGrenadeTime > (10000 + Math.random() * 5000)) {
+          aiData.lastGrenadeTime = now;
+          // Visual grenade projectile
+          const grenade = new THREE.Mesh(
+            new THREE.SphereGeometry(0.18, 8, 8),
+            new THREE.MeshStandardMaterial({ color: '#4a5f3a', roughness: 0.7 })
+          );
+          grenade.position.copy(oppPos).add(new THREE.Vector3(0, 1.5, 0));
+          scene.add(grenade);
+          const grenadeTarget = pos.clone();
+          const grenadeStart = grenade.position.clone();
+          const grenadeStartTime = now;
+          const grenadeFlightTime = 1200;
+          const grenadeInterval = setInterval(() => {
+            const t = Math.min(1, (Date.now() - grenadeStartTime) / grenadeFlightTime);
+            grenade.position.lerpVectors(grenadeStart, grenadeTarget, t);
+            grenade.position.y += Math.sin(t * Math.PI) * 6; // Arc trajectory
+            if (t >= 1) {
+              clearInterval(grenadeInterval);
+              scene.remove(grenade);
+              grenade.geometry.dispose();
+              createExplosionBlast(scene, grenadeTarget);
+              sound.playExplosion();
+              cameraShakeRef.current = 0.4;
+              const distToBlast = grenadeTarget.distanceTo(playerPosRef.current);
+              if (distToBlast < 7) {
+                takeDamage(Math.round(45 * (1 - distToBlast / 7)));
+              }
+            }
+          }, 16);
+        }
       }
+
 
       // 8. State Broadcast
       if (now - lastNetworkSync > 45 && mode !== 'ai') {

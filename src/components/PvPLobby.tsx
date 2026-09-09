@@ -16,7 +16,7 @@ const stakeOptions = [0, 25, 100];
 export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLoadout }) => {
   const [joinCode, setJoinCode] = useState('');
   const [stakeStars, setStakeStars] = useState(0);
-  const [selectedMap, setSelectedMap] = useState<MapId>('warehouse');
+  const [selectedMap, setSelectedMap] = useState<MapId>('warzone');
 
   const roomCode = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
   const start = (mode: 'host' | 'join' | 'ai', code: string, stake = stakeStars) => {

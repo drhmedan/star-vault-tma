@@ -196,7 +196,7 @@ export const App: React.FC = () => {
   };
 
   // PvP Tactical Handlers
-  const handleStartPvPMatch = (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number, mapId: MapId = 'warehouse') => {
+  const handleStartPvPMatch = (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number, mapId: MapId = 'warzone') => {
     if (stakeStars > 0 && user.stars < stakeStars) {
       setTab('shop');
       return;
