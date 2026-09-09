@@ -85,10 +85,6 @@ export function buildMapEnvironment(
   ground.receiveShadow = true;
   scene.add(ground);
 
-  const grid = new THREE.GridHelper(350, 70, mapId === 'desert' ? '#78350f' : '#475569', mapId === 'desert' ? '#92400e' : '#334155');
-  grid.position.y = 0.02;
-  scene.add(grid);
-
   if (mapId === 'warehouse') {
     // ==================== E R A N G E L   W A R E H O U S E ====================
     // 3D Red Car (PUBG Image Replica)
@@ -297,6 +293,55 @@ export function buildMapEnvironment(
       scene.add(tower);
       obstacles.push({ mesh: tower, box: new THREE.Box3().setFromObject(tower), type: 'building' });
     });
+
+    // South Armory Compound (Provides tactical cover and exploration at South Base)
+    const armory = new THREE.Group();
+    const armoryBase = new THREE.Mesh(new THREE.BoxGeometry(28, 0.28, 20), concrete);
+    armoryBase.position.y = 0.14;
+    armory.add(armoryBase);
+    [-13, 13].forEach((x) => {
+      const w = new THREE.Mesh(new THREE.BoxGeometry(0.6, 5.5, 18), concrete);
+      w.position.set(x, 2.75, 0);
+      armory.add(w);
+    });
+    [-9, 9].forEach((z) => {
+      const w = new THREE.Mesh(new THREE.BoxGeometry(26, 5.5, 0.6), concrete);
+      w.position.set(0, 2.75, z);
+      armory.add(w);
+    });
+    const armoryRoof = new THREE.Mesh(new THREE.BoxGeometry(29, 0.3, 21), new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.7, metalness: 0.5 }));
+    armoryRoof.position.y = 5.7;
+    armory.add(armoryRoof);
+    armory.position.set(-28, 0, 48);
+    armory.traverse((child) => { if (child instanceof THREE.Mesh) { child.castShadow = true; child.receiveShadow = true; } });
+    scene.add(armory);
+    obstacles.push({ mesh: armory, box: new THREE.Box3(new THREE.Vector3(-44, 0, 36), new THREE.Vector3(-12, 6, 60)), type: 'building' });
+
+    // Tactical Armored Vehicles as Heavy Roadside Cover
+    const jeepSouth = create3DCar('#1e3a8a');
+    jeepSouth.position.set(-5, 0, 18);
+    jeepSouth.rotation.y = 0.35;
+    scene.add(jeepSouth);
+    obstacles.push({ mesh: jeepSouth, box: new THREE.Box3().setFromObject(jeepSouth), type: 'car' });
+
+    const jeepNorth = create3DCar('#78350f');
+    jeepNorth.position.set(8, 0, -18);
+    jeepNorth.rotation.y = -0.4;
+    scene.add(jeepNorth);
+    obstacles.push({ mesh: jeepNorth, box: new THREE.Box3().setFromObject(jeepNorth), type: 'car' });
+
+    // Natural Pine Trees on the perimeter to enclose the map realistically
+    const pinePositions = [
+      [-65, 45], [-60, 65], [-45, 80], [45, 75], [65, 55],
+      [-65, -45], [-55, -68], [-40, -82], [45, -75], [65, -55],
+      [-75, 0], [75, 0], [-2, 85], [2, -85]
+    ];
+    pinePositions.forEach(([px, pz]) => {
+      const tree = createPineTree();
+      tree.position.set(px, 0, pz);
+      scene.add(tree);
+      obstacles.push({ mesh: tree, box: new THREE.Box3().setFromObject(tree), type: 'tree' });
+    });
   }
 
   // 3. 3D Ground Loot Generation (AWM Sniper, Shotgun, Ammo, Medkits)
@@ -308,7 +353,16 @@ export function buildMapEnvironment(
     icon: string;
     color: string;
     pos: THREE.Vector3;
-  }> = [
+  }> = mapId === 'warzone' ? [
+    { id: 'loot-awm-1', type: 'weapon', weaponType: 'awm', nameAr: 'قناصة AWM الأسطورية', icon: '🎯', color: '#10b981', pos: new THREE.Vector3(38, 10.2, -32) }, // At top of watchtower!
+    { id: 'loot-awm-2', type: 'weapon', weaponType: 'awm', nameAr: 'قناصة AWM الأسطورية', icon: '🎯', color: '#10b981', pos: new THREE.Vector3(-25, 0.4, 48) }, // Inside South Armory
+    { id: 'loot-shotgun-1', type: 'weapon', weaponType: 'shotgun', nameAr: 'شوزن قتالي S1897', icon: '💥', color: '#ef4444', pos: new THREE.Vector3(25, 0.4, -28) }, // Inside North Depot
+    { id: 'loot-shotgun-2', type: 'weapon', weaponType: 'shotgun', nameAr: 'شوزن قتالي S1897', icon: '💥', color: '#ef4444', pos: new THREE.Vector3(-4, 0.4, 18) }, // Near South Jeep
+    { id: 'loot-ammo-1', type: 'ammo', nameAr: 'ذخيرة ثقيلة (+60)', icon: '⚡', color: '#f59e0b', pos: new THREE.Vector3(0, 0.3, 0) }, // Center Highway
+    { id: 'loot-ammo-2', type: 'ammo', nameAr: 'ذخيرة ثقيلة (+60)', icon: '⚡', color: '#f59e0b', pos: new THREE.Vector3(-28, 0.3, 52) },
+    { id: 'loot-med-1', type: 'medkit', nameAr: 'حقيبة إسعاف (Medkit)', icon: '🩹', color: '#06b6d4', pos: new THREE.Vector3(10, 0.3, -22) },
+    { id: 'loot-med-2', type: 'medkit', nameAr: 'حقيبة إسعاف (Medkit)', icon: '🩹', color: '#06b6d4', pos: new THREE.Vector3(-38, 10.2, 32) }
+  ] : [
     { id: 'loot-awm', type: 'weapon', weaponType: 'awm', nameAr: 'قناصة AWM الأسطورية', icon: '🎯', color: '#10b981', pos: new THREE.Vector3(12, 0.4, -14) },
     { id: 'loot-shotgun', type: 'weapon', weaponType: 'shotgun', nameAr: 'شوزن قتالي S1897', icon: '💥', color: '#ef4444', pos: new THREE.Vector3(-14, 0.4, -6) },
     { id: 'loot-ammo-1', type: 'ammo', nameAr: 'ذخيرة ثقيلة (+60)', icon: '⚡', color: '#f59e0b', pos: new THREE.Vector3(0, 0.3, 12) },
@@ -416,3 +470,32 @@ function create3DCar(color: string): THREE.Group {
 
   return carGroup;
 }
+
+// 3D Pine Tree Helper
+function createPineTree(): THREE.Group {
+  const treeGroup = new THREE.Group();
+  const trunkMat = new THREE.MeshStandardMaterial({ color: '#451a03', roughness: 0.9 });
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.45, 3.2, 8), trunkMat);
+  trunk.position.y = 1.6;
+  trunk.castShadow = true;
+  treeGroup.add(trunk);
+
+  const foliageMat = new THREE.MeshStandardMaterial({ color: '#14532d', roughness: 0.8 });
+  const f1 = new THREE.Mesh(new THREE.ConeGeometry(2.6, 3.4, 8), foliageMat);
+  f1.position.y = 3.8;
+  f1.castShadow = true;
+  treeGroup.add(f1);
+
+  const f2 = new THREE.Mesh(new THREE.ConeGeometry(2.0, 2.8, 8), foliageMat);
+  f2.position.y = 5.6;
+  f2.castShadow = true;
+  treeGroup.add(f2);
+
+  const f3 = new THREE.Mesh(new THREE.ConeGeometry(1.4, 2.2, 8), foliageMat);
+  f3.position.y = 7.1;
+  f3.castShadow = true;
+  treeGroup.add(f3);
+
+  return treeGroup;
+}
+

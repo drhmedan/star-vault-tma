@@ -39,11 +39,6 @@ export function buildBattlefieldWorld(scene: THREE.Scene): {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // Grid helper for tactical distance perception
-  const grid = new THREE.GridHelper(350, 70, '#475569', '#334155');
-  grid.position.y = 0.02;
-  scene.add(grid);
-
   // 3. THE 3D RED CAR (Exact match to the PUBG image uploaded by user!)
   const carGroup = new THREE.Group();
   

@@ -100,16 +100,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const [nearbyLoot, setNearbyLoot] = useState<LootItem3D | null>(null);
   const [damageFeed, setDamageFeed] = useState<string | null>(null);
 
-  // Game Coordinates & Physics Refs
-  const playerPosRef = useRef<THREE.Vector3>(new THREE.Vector3(-4, 0, 11)); // Behind the car
+  // Game Coordinates & Physics Refs (Distant Tactical Spawns: South Base vs North Outpost)
+  const playerPosRef = useRef<THREE.Vector3>(new THREE.Vector3(-25, 0, 50));
   const playerVelRef = useRef<THREE.Vector3>(new THREE.Vector3());
-  const playerAnglesRef = useRef<{ yaw: number; pitch: number }>({ yaw: Math.PI, pitch: 0 });
+  const playerAnglesRef = useRef<{ yaw: number; pitch: number }>({ yaw: 0, pitch: 0 });
   const isCrouchedRef = useRef<boolean>(false);
   const isAimingRef = useRef<boolean>(false);
   const isFiringRef = useRef<boolean>(false);
   const lastFireTimeRef = useRef<number>(0);
 
-  const opponentPosRef = useRef<THREE.Vector3>(new THREE.Vector3(12, 0, -8));
+  const opponentPosRef = useRef<THREE.Vector3>(new THREE.Vector3(25, 0, -50));
   const opponentHpRef = useRef<number>(100);
   const opponentMeshRef = useRef<ReturnType<typeof createSoldierMesh> | null>(null);
 
@@ -268,12 +268,30 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       if (e.key.toLowerCase() === 'shift') sprintRef.current = false;
     };
 
-    // Pointer Lock Mouse Controls (PC)
+    // Mouse Steering & Camera Controls (Supports Pointer Lock & Mouse Drag)
+    let isMouseDown = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+
     const onMouseMove = (e: MouseEvent) => {
-      if (document.pointerLockElement !== renderer.domElement) return;
-      const sens = 0.0022;
-      playerAnglesRef.current.yaw -= e.movementX * sens;
-      playerAnglesRef.current.pitch -= e.movementY * sens;
+      const sens = 0.0028;
+      let dx = 0;
+      let dy = 0;
+
+      if (document.pointerLockElement === renderer.domElement) {
+        dx = e.movementX;
+        dy = e.movementY;
+      } else if (isMouseDown) {
+        dx = e.clientX - lastMouseX;
+        dy = e.clientY - lastMouseY;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+      } else {
+        return;
+      }
+
+      playerAnglesRef.current.yaw -= dx * sens;
+      playerAnglesRef.current.pitch -= dy * sens;
       playerAnglesRef.current.pitch = Math.max(-1.15, Math.min(1.15, playerAnglesRef.current.pitch));
 
       const deg = Math.round(((-playerAnglesRef.current.yaw * 180) / Math.PI) % 360);
@@ -281,6 +299,14 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     };
 
     const onMouseDown = (e: MouseEvent) => {
+      isMouseDown = true;
+      lastMouseX = e.clientX;
+      lastMouseY = e.clientY;
+
+      if (document.pointerLockElement !== renderer.domElement) {
+        renderer.domElement.requestPointerLock();
+      }
+
       if (e.button === 0) {
         isFiringRef.current = true;
         triggerShoot(camera, scene, obstacles, opponentSoldier);
@@ -292,6 +318,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     };
 
     const onMouseUp = (e: MouseEvent) => {
+      isMouseDown = false;
       if (e.button === 0) {
         isFiringRef.current = false;
       } else if (e.button === 2) {
@@ -503,27 +530,91 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         takeDamage(6);
       }
 
-      // 7. AI Opponent Simulation in Solo Mode
+      // 7. Tactical AI Opponent Simulation (Aggressive Hunting, Flanking, Animated Limbs & Tracer Firing)
       if (mode === 'ai' && opponentHpRef.current > 0) {
         const oppPos = opponentPosRef.current;
         const dist = oppPos.distanceTo(pos);
         const targetAngle = Math.atan2(pos.x - oppPos.x, pos.z - oppPos.z);
-        opponentSoldier.root.rotation.y = targetAngle;
+        
+        // Smooth rotation to aim at player
+        opponentSoldier.root.rotation.y = THREE.MathUtils.lerp(
+          opponentSoldier.root.rotation.y,
+          targetAngle,
+          Math.min(1, delta * 12)
+        );
 
-        if (dist > 16) {
-          oppPos.x += Math.sin(targetAngle) * 3.0 * delta;
-          oppPos.z += Math.cos(targetAngle) * 3.0 * delta;
-          opponentSoldier.root.position.copy(oppPos);
+        // Tactical Movement: Hunt -> Strafe -> Circle
+        let aiSpeed = 5.2;
+        if (dist > 35) {
+          // Hunt & Sprint across map
+          aiSpeed = 6.2;
+          oppPos.x += Math.sin(targetAngle) * aiSpeed * delta;
+          oppPos.z += Math.cos(targetAngle) * aiSpeed * delta;
+        } else if (dist > 12) {
+          // Combat Strafe & Flank
+          aiSpeed = 4.5;
+          const strafeAngle = targetAngle + Math.sin(clock.elapsedTime * 2.8) * 1.1;
+          oppPos.x += Math.sin(strafeAngle) * aiSpeed * delta;
+          oppPos.z += Math.cos(strafeAngle) * aiSpeed * delta;
+        } else {
+          // Close quarters aggressive circle
+          aiSpeed = 4.8;
+          const circleAngle = targetAngle + Math.PI / 2;
+          oppPos.x += Math.sin(circleAngle) * aiSpeed * delta;
+          oppPos.z += Math.cos(circleAngle) * aiSpeed * delta;
         }
 
-        if (dist < 42 && now - opponentSoldier.root.userData.lastFireTime > 360) {
+        // Clamp inside arena bounds
+        oppPos.x = Math.max(-140, Math.min(140, oppPos.x));
+        oppPos.z = Math.max(-140, Math.min(140, oppPos.z));
+        opponentSoldier.root.position.copy(oppPos);
+
+        // Animate AI Bot limbs (Gait Stride) so it moves like a real soldier
+        const oppRig = opponentSoldier.rig;
+        if (oppRig) {
+          const aiGait = clock.elapsedTime * 11;
+          const aiStride = Math.sin(aiGait) * 0.48;
+          const aiStrideOpposite = Math.sin(aiGait + Math.PI) * 0.48;
+          oppRig.leftLeg.rotation.x = aiStride;
+          oppRig.rightLeg.rotation.x = aiStrideOpposite;
+          oppRig.leftArm.rotation.x = -0.2 - aiStrideOpposite * 0.3;
+          oppRig.rightArm.rotation.x = -0.2 - aiStride * 0.3;
+        }
+
+        // Tactical AI Firing (Bursts every 340ms when within 65m)
+        if (!opponentSoldier.root.userData.lastFireTime) {
           opponentSoldier.root.userData.lastFireTime = now;
-          opponentSoldier.muzzleLight.intensity = 3;
-          setTimeout(() => (opponentSoldier.muzzleLight.intensity = 0), 50);
+        }
+
+        if (dist < 65 && now - opponentSoldier.root.userData.lastFireTime > 340) {
+          opponentSoldier.root.userData.lastFireTime = now;
+
+          // Muzzle Flash
+          opponentSoldier.muzzleLight.intensity = 5;
+          setTimeout(() => (opponentSoldier.muzzleLight.intensity = 0), 60);
           sound.playGunshot('ak47');
 
-          if (Math.random() < 0.42 && !isCrouchedRef.current) {
-            takeDamage(15);
+          // Visible Red Bullet Tracer from AI to Player
+          const aiMuzzlePos = oppPos.clone().add(new THREE.Vector3(0, 1.3, 0));
+          const aimTarget = pos.clone().add(new THREE.Vector3(
+            (Math.random() - 0.5) * (isCrouchedRef.current ? 1.8 : 0.8),
+            isCrouchedRef.current ? 0.6 : 1.2,
+            (Math.random() - 0.5) * (isCrouchedRef.current ? 1.8 : 0.8)
+          ));
+          const tracerGeo = new THREE.BufferGeometry().setFromPoints([aiMuzzlePos, aimTarget]);
+          const tracerMat = new THREE.LineBasicMaterial({ color: '#f87171', transparent: true, opacity: 0.95 });
+          const aiTracer = new THREE.Line(tracerGeo, tracerMat);
+          scene.add(aiTracer);
+          setTimeout(() => {
+            scene.remove(aiTracer);
+            tracerGeo.dispose();
+            tracerMat.dispose();
+          }, 90);
+
+          // Calculate Damage with crouch protection
+          const hitChance = isCrouchedRef.current ? 0.22 : 0.48;
+          if (Math.random() < hitChance) {
+            takeDamage(Math.floor(Math.random() * 8 + 12));
           }
         }
       }
