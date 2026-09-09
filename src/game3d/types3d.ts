@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 
 export type CameraViewMode = 'tpp' | 'fpp';
-export type MapId = 'warehouse' | 'desert';
+export type MapId = 'warehouse' | 'desert' | 'warzone';
 export type WeaponSlotId = 'primary' | 'secondary' | 'sidearm';
+export type LocomotionState = 'idle' | 'sprint' | 'crouch' | 'slide' | 'prone' | 'crawl' | 'vault' | 'climb';
+export type VehicleType = 'tank' | 'buggy';
+export type ProjectileType = 'bullet' | 'rocket' | 'shell' | 'flame';
 
 export interface WeaponSlotState {
   id: WeaponSlotId;
@@ -57,6 +60,27 @@ export interface Bullet3D {
   ownerId: number;
   distanceTraveled: number;
   maxDistance: number;
+  type?: ProjectileType;
+  splashRadius?: number;
+  gravity?: number;
+}
+
+export interface CombatVehicle3D {
+  id: string;
+  type: VehicleType;
+  mesh: THREE.Group;
+  pos: THREE.Vector3;
+  armor: number;
+  maxArmor: number;
+  turret?: THREE.Group;
+  cannon?: THREE.Mesh;
+  isOccupied: boolean;
+}
+
+export interface DestructibleCover3D extends CoverObstacle3D {
+  health: number;
+  maxHealth: number;
+  explosive: boolean;
 }
 
 export interface CoverObstacle3D {

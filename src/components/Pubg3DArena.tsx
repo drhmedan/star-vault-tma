@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import confetti from 'canvas-confetti';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ArrowLeft, Crosshair, Shield, RefreshCw, Radio, 
   Share2, Trophy, Skull, Eye, ChevronUp, Zap, Box, Compass
@@ -10,7 +11,7 @@ import { buildMapEnvironment, MAP_CATALOG } from '../game3d/mapRegistry';
 import { createSoldierMesh } from '../game3d/worldBuilder';
 import { 
   CoverObstacle3D, SafeZone3D, CameraViewMode, 
-  MapId, WeaponSlotId, WeaponSlotState, LootItem3D 
+  MapId, WeaponSlotId, WeaponSlotState, LootItem3D, LocomotionState
 } from '../game3d/types3d';
 import { multiplayer, ConnectionStatus } from '../services/multiplayer';
 import { sound } from '../audio/soundEngine';
@@ -56,6 +57,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const [outsideZone, setOutsideZone] = useState<boolean>(false);
   const [compassHeading, setCompassHeading] = useState<number>(0);
   const [medkits, setMedkits] = useState<number>(2);
+  const [locomotion, setLocomotion] = useState<LocomotionState>('idle');
+  const [vehiclePrompt, setVehiclePrompt] = useState<'tank' | 'buggy' | null>(null);
+  const locomotionRef = useRef<LocomotionState>('idle');
+  const sprintRef = useRef(false);
+  const proneRef = useRef(false);
+  const lastJumpRef = useRef(0);
 
   // 3-Slot Weapon Inventory System
   const [activeSlot, setActiveSlot] = useState<WeaponSlotId>('primary');
@@ -193,7 +200,10 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     const height = container.clientHeight || 580;
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
@@ -235,6 +245,10 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         toggleViewMode();
       } else if (e.key.toLowerCase() === 'c') {
         toggleCrouch();
+      } else if (e.key.toLowerCase() === 'z') {
+        toggleProne();
+      } else if (e.key.toLowerCase() === 'shift') {
+        sprintRef.current = true;
       } else if (e.key.toLowerCase() === 'r') {
         reloadActiveWeapon();
       } else if (e.key.toLowerCase() === 'e') {
@@ -251,6 +265,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     };
     const onKeyUp = (e: KeyboardEvent) => {
       keys.current[e.key.toLowerCase()] = false;
+      if (e.key.toLowerCase() === 'shift') sprintRef.current = false;
     };
 
     // Pointer Lock Mouse Controls (PC)
@@ -320,8 +335,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const { yaw, pitch } = playerAnglesRef.current;
       const curViewMode = viewModeRef.current;
 
-      // 1. Move Player relative to Camera Yaw
-      const moveSpeed = isCrouchedRef.current ? 2.8 : 5.8;
+      // 1. Tactical locomotion: sprint, crouch, prone/crawl, and vault impulse.
+      const moving = Boolean(keys.current['w'] || keys.current['a'] || keys.current['s'] || keys.current['d']);
+      const isProne = proneRef.current;
+      const isVaulting = keys.current[' '] && moving && pos.y <= 0.05 && Date.now() - lastJumpRef.current > 500;
+      const moveSpeed = isProne ? 1.25 : isCrouchedRef.current ? 2.8 : sprintRef.current ? 9.2 : 5.8;
+      const nextLocomotion: LocomotionState = isVaulting ? 'vault' : isProne ? (moving ? 'crawl' : 'prone') : isCrouchedRef.current ? 'crouch' : sprintRef.current && moving ? 'sprint' : moving ? 'idle' : 'idle';
+      if (nextLocomotion !== locomotionRef.current) {
+        locomotionRef.current = nextLocomotion;
+        setLocomotion(nextLocomotion);
+      }
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
 
@@ -336,10 +359,15 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         pos.add(moveDir);
       }
 
-      // Jump Physics
-      if (keys.current[' '] && pos.y <= 0.05 && !isCrouchedRef.current) {
-        vel.y = 5.2;
+      // Vault/climb impulse uses the same grounded kinematics and stays collision-safe.
+      if (isVaulting) {
+        lastJumpRef.current = Date.now();
+        vel.y = 5.8;
+        keys.current[' '] = false;
+        setLocomotion('vault');
       }
+      if (isProne) vel.y = 0;
+      else if (keys.current[' '] && pos.y <= 0.05 && !isCrouchedRef.current) vel.y = 5.2;
       vel.y -= 15.0 * delta;
       pos.y += vel.y * delta;
       if (pos.y < 0) {
@@ -616,6 +644,21 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
     const targets = [oppSoldier.head, oppSoldier.torso, ...obstacles.map(o => o.mesh)];
     const intersects = raycaster.intersectObjects(targets, true);
+    const hitPoint = intersects[0]?.point ?? raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(120));
+    const tracerGeometry = new THREE.BufferGeometry().setFromPoints([raycaster.ray.origin.clone(), hitPoint]);
+    const tracerMaterial = new THREE.LineBasicMaterial({ color: curWeapon.weaponType === 'awm' ? '#fbbf24' : '#67e8f9', transparent: true, opacity: 0.9 });
+    const tracer = new THREE.Line(tracerGeometry, tracerMaterial);
+    scene.add(tracer);
+    window.setTimeout(() => {
+      scene.remove(tracer);
+      tracerGeometry.dispose();
+      tracerMaterial.dispose();
+    }, curWeapon.weaponType === 'awm' ? 180 : 90);
+
+    const muzzle = new THREE.PointLight(curWeapon.weaponType === 'awm' ? '#fbbf24' : '#22d3ee', 6, 4);
+    muzzle.position.copy(raycaster.ray.origin);
+    scene.add(muzzle);
+    window.setTimeout(() => scene.remove(muzzle), 70);
 
     if (intersects.length > 0) {
       const hit = intersects[0];
@@ -679,8 +722,21 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   };
 
   const toggleCrouch = () => {
+    if (proneRef.current) proneRef.current = false;
     isCrouchedRef.current = !isCrouchedRef.current;
     setIsCrouching(isCrouchedRef.current);
+    locomotionRef.current = isCrouchedRef.current ? 'crouch' : 'idle';
+    setLocomotion(locomotionRef.current);
+    sound.playPickup();
+  };
+
+  const toggleProne = () => {
+    proneRef.current = !proneRef.current;
+    isCrouchedRef.current = false;
+    setIsCrouching(false);
+    locomotionRef.current = proneRef.current ? 'prone' : 'idle';
+    setLocomotion(locomotionRef.current);
+    tgHaptics.impact('medium');
     sound.playPickup();
   };
 
@@ -754,6 +810,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   };
 
   const activeWeapon = weapons[activeSlot];
+  const locomotionLabel: Record<LocomotionState, string> = { idle: 'READY', sprint: 'SPRINT', crouch: 'CROUCH', slide: 'SLIDE', prone: 'PRONE', crawl: 'CRAWL', vault: 'VAULT', climb: 'CLIMB' };
 
   return (
     <div className="fixed inset-0 z-50 w-full h-full max-w-lg mx-auto bg-slate-950 overflow-hidden border-x border-slate-800 shadow-2xl flex flex-col select-none touch-none">
@@ -762,6 +819,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         ref={mountRef} 
         className="w-full h-full relative cursor-crosshair overflow-hidden"
       >
+        <div className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-3 rounded-full border border-cyan-300/20 bg-slate-950/75 px-3 py-1.5 font-mono text-[9px] tracking-[0.18em] text-cyan-200 shadow-[0_0_24px_rgba(34,211,238,.14)] backdrop-blur-md">
+          <span className="text-amber-300">{mapId === 'warzone' ? 'WARZONE 200×200' : 'TACTICAL ARENA'}</span>
+          <span className="h-1 w-1 rounded-full bg-cyan-300" />
+          <span>{locomotionLabel[locomotion]}</span>
+          <span className="text-slate-500">FPP/TPP ONLINE</span>
+        </div>
         {/* PC Pointer Lock Banner */}
         {!isLocked && (
           <div className="absolute top-16 inset-x-0 mx-auto w-max bg-black/80 backdrop-blur-md px-4 py-1.5 rounded-full border border-slate-700/60 text-white text-xs font-bold pointer-events-none z-30 animate-pulse">
@@ -855,6 +918,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           </div>
         </div>
       </div>
+
+      <div className="pointer-events-none absolute inset-x-0 top-20 z-30 flex justify-center">
+        <AnimatePresence>
+          {damageFeed && <motion.div initial={{ opacity: 0, y: 12, scale: .8 }} animate={{ opacity: 1, y: -18, scale: 1 }} exit={{ opacity: 0, y: -42 }} className="rounded-full border border-amber-300/40 bg-[#080b11]/80 px-5 py-2 font-black tracking-wide text-amber-200 shadow-[0_0_30px_rgba(255,215,0,.25)] backdrop-blur-xl">{damageFeed}</motion.div>}
+        </AnimatePresence>
+      </div>
+
+      <AnimatePresence>
+        {nearbyLoot && <motion.button initial={{ opacity: 0, y: 25 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 25 }} onClick={pickupNearbyLoot} className="pointer-events-auto absolute bottom-52 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-2xl border border-amber-300/40 bg-[#080b11]/85 px-4 py-3 text-right shadow-[0_0_32px_rgba(255,215,0,.15)] backdrop-blur-xl"><span className="grid h-10 w-10 place-items-center rounded-xl bg-amber-300/15 text-xl">{nearbyLoot.icon}</span><span><span className="block text-[9px] font-bold tracking-[.2em] text-amber-300">GROUND LOOT / PRESS F</span><span className="block text-sm font-black text-white">{nearbyLoot.nameAr}</span></span><span className="rounded-lg bg-amber-300 px-2 py-1 text-[10px] font-black text-slate-950">التقاط</span></motion.button>}
+      </AnimatePresence>
 
       {/* Bottom HUD: Health, Armor, 3-Slot Weapons, & Touch Controls */}
       <div className="absolute bottom-2 inset-x-2 z-20 flex flex-col gap-1.5 pointer-events-auto">
