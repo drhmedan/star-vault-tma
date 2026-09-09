@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import confetti from 'canvas-confetti';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ArrowLeft, Crosshair, Shield, RefreshCw, Radio, 
   Share2, Trophy, Skull, Eye, ChevronUp, Zap, Box, Compass
@@ -855,6 +856,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           </div>
         </div>
       </div>
+
+      <div className="pointer-events-none absolute inset-x-0 top-20 z-30 flex justify-center">
+        <AnimatePresence>
+          {damageFeed && <motion.div initial={{ opacity: 0, y: 12, scale: .8 }} animate={{ opacity: 1, y: -18, scale: 1 }} exit={{ opacity: 0, y: -42 }} className="rounded-full border border-amber-300/40 bg-[#080b11]/80 px-5 py-2 font-black tracking-wide text-amber-200 shadow-[0_0_30px_rgba(255,215,0,.25)] backdrop-blur-xl">{damageFeed}</motion.div>}
+        </AnimatePresence>
+      </div>
+
+      <AnimatePresence>
+        {nearbyLoot && <motion.button initial={{ opacity: 0, y: 25 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 25 }} onClick={pickupNearbyLoot} className="pointer-events-auto absolute bottom-52 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-2xl border border-amber-300/40 bg-[#080b11]/85 px-4 py-3 text-right shadow-[0_0_32px_rgba(255,215,0,.15)] backdrop-blur-xl"><span className="grid h-10 w-10 place-items-center rounded-xl bg-amber-300/15 text-xl">{nearbyLoot.icon}</span><span><span className="block text-[9px] font-bold tracking-[.2em] text-amber-300">GROUND LOOT / PRESS F</span><span className="block text-sm font-black text-white">{nearbyLoot.nameAr}</span></span><span className="rounded-lg bg-amber-300 px-2 py-1 text-[10px] font-black text-slate-950">التقاط</span></motion.button>}
+      </AnimatePresence>
 
       {/* Bottom HUD: Health, Armor, 3-Slot Weapons, & Touch Controls */}
       <div className="absolute bottom-2 inset-x-2 z-20 flex flex-col gap-1.5 pointer-events-auto">
