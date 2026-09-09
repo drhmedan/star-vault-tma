@@ -73,17 +73,17 @@ export const MAP_CATALOG: Record<MapId, MapMetadata> = {
     nameAr: 'منطقة الحرب الكبرى (Tactical Warzone)',
     subtitleAr: 'ساحة 200×200 متر — أحياء، ميناء، ومدينة أشباح',
     previewColor: 'from-zinc-950 via-cyan-950 to-amber-950',
-    skyColor: '#27405c',
-    fogColor: '#4a5f74',
+    skyColor: '#23435f',
+    fogColor: '#4e6478',
     fogDensity: 0.0042,
     descriptionAr: 'ميدان عمليات واسع بمناطق قتال بعيدة وقريبة، طرق، نهر، ومبانٍ متعددة الطوابق.',
     icon: '◈',
     theme: 'dusk',
-    sunColor: '#ffe0a8',
+    sunColor: '#ffdca0',
     ambientColor: '#a9bdd6',
     hemisphereSky: '#b9d4ec',
     hemisphereGround: '#46523c',
-    sunElevation: 42,
+    sunElevation: 30,
     sunAzimuth: 155,
     groundBase: '#5a6b45',
     groundRock: '#6d654e',
@@ -305,7 +305,7 @@ function desertHeight(x: number, z: number): number {
 // ------------------------------------------------------------
 // Ground plane with vertex colors
 // ------------------------------------------------------------
-function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId):
+function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId, sunDir: THREE.Vector3):
   { getHeightAt: (x: number, z: number) => number; bounds: number } {
   const bounds = mapId === 'warzone' ? 100 : 90;
   const sub = mapId === 'warzone' ? 165 : 90;
@@ -316,7 +316,6 @@ function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId):
   const getHeightAt = (x: number, z: number) => hFn(x, z);
 
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
-  const colors = new Float32Array(pos.count * 3);
 
   const grass = new THREE.Color(meta.groundGrass);
   const grassLow = new THREE.Color('#39482c');
@@ -324,22 +323,48 @@ function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId):
   const grassLush = new THREE.Color('#3f5c2c');
   const dirt = new THREE.Color(meta.groundRock);
   const sand = new THREE.Color(meta.groundSand);
+  const wetSand = new THREE.Color('#5d5748');
   const asphalt = new THREE.Color('#26292b');
+  const asphaltWorn = new THREE.Color('#3a3d3c');
+  const craterDirt = new THREE.Color('#5f584a');
+  const warm = new THREE.Color(meta.sunColor);
+  const cool = new THREE.Color(meta.hemisphereSky);
   const tmp = new THREE.Color();
 
+  // First pass — displace vertices to the terrain heightfield.
+  for (let i = 0; i < pos.count; i++) {
+    pos.setY(i, hFn(pos.getX(i), pos.getZ(i)));
+  }
+  geo.computeVertexNormals();
+  const normals = geo.getAttribute('normal') as THREE.BufferAttribute;
+  const sunUp = Math.max(0, sunDir.y);
+
+  const colors = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
     const z = pos.getZ(i);
-    const h = hFn(x, z);
-    pos.setY(i, h);
+    const h = pos.getY(i);
 
     let c: THREE.Color;
+    const rd = mapId === 'warzone' ? roadDist(x, z) : Infinity;
+    const rivD = mapId === 'warzone' ? riverDist(x, z) : Infinity;
+
     if (mapId !== 'warzone' && mapId !== 'desert') {
       c = tmp.set(meta.groundBase);
-    } else if (roadDist(x, z) < 4.4 && mapId === 'warzone') {
-      c = asphalt;
-    } else if (mapId === 'warzone' && riverDist(x, z) < 7.5) {
-      c = sand;
+    } else if (mapId === 'warzone' && rd < 4.4) {
+      // Asphalt with worn tyre lines near the centre of each lane.
+      tmp.copy(asphalt);
+      tmp.lerp(asphaltWorn, clamp01(1 - Math.abs(((z % 6) + 6) % 6 - 3) / 3) * 0.4);
+      c = tmp;
+    } else if (mapId === 'warzone' && rd < 6.8) {
+      // Dirt shoulder between the road and the meadow.
+      tmp.copy(dirt).lerp(grass, clamp01((rd - 4.4) / 2.4));
+      c = tmp;
+    } else if (mapId === 'warzone' && rivD < 7.5) {
+      // River bed: wet sand at the waterline blending into dry sand, then grass.
+      tmp.copy(wetSand).lerp(sand, clamp01((rivD - 3.0) / 3.0));
+      tmp.lerp(grass, clamp01((rivD - 5.5) / 2.0));
+      c = tmp;
     } else if (mapId === 'desert') {
       c = tmp.copy(dirt).lerp(sand, (Math.sin(x * 0.11) * Math.cos(z * 0.09) + 1) * 0.5);
     } else {
@@ -355,14 +380,30 @@ function buildGround(scene: THREE.Scene, meta: MapMetadata, mapId: MapId):
       tmp.offsetHSL(0, 0, (micro - 0.5) * 0.03);
       c = tmp;
     }
+
+    // Crater bowls read as churned, darker dirt.
+    if (mapId === 'warzone') {
+      for (let k = 0; k < CRATERS.length; k++) {
+        const cx = CRATERS[k][0], cz = CRATERS[k][1], cr = CRATERS[k][2];
+        const d = Math.hypot(x - cx, z - cz);
+        if (d < cr) c.lerp(craterDirt, clamp01(1 - d / cr) * 0.6);
+      }
+    }
+
+    // Baked slope lighting: sun-facing slopes warm up, shadowed slopes cool
+    // down — gives the terrain real relief without extra runtime lights.
+    const nx = normals.getX(i), ny = normals.getY(i), nz = normals.getZ(i);
+    const d = nx * sunDir.x + ny * sunDir.y + nz * sunDir.z;
+    c.lerp(warm, clamp01(d) * 0.1 * (0.4 + sunUp));
+    c.lerp(cool, clamp01(-d) * 0.09);
+
     colors[i * 3] = c.r;
     colors[i * 3 + 1] = c.g;
     colors[i * 3 + 2] = c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.computeVertexNormals();
 
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.02 });
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.02 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   mesh.name = 'ground';
@@ -409,15 +450,28 @@ function buildRoads(scene: THREE.Scene, mats: MapMaterials) {
 }
 
 function buildRiver(scene: THREE.Scene, mats: MapMaterials) {
-  const waterGeo = new THREE.PlaneGeometry(9, 190, 1, 32);
+  // Local Z of this XZ-rotated plane maps to world Y, so animating local Z
+  // later in the render loop produces gentle waves. Base offsets are stashed
+  // in userData for the animation.
+  const waterGeo = new THREE.PlaneGeometry(9, 190, 2, 40);
   waterGeo.rotateX(-Math.PI / 2);
+  const zPos = waterGeo.getAttribute('position') as THREE.BufferAttribute;
+  const baseZ = new Float32Array(zPos.count);
+  for (let i = 0; i < zPos.count; i++) baseZ[i] = zPos.getZ(i);
+  waterGeo.userData.baseZ = baseZ;
+
   const mat = mats.water.clone();
+  mat.color.set('#2a6d78');
   mat.transparent = true;
-  mat.opacity = 0.72;
+  mat.opacity = 0.78;
+  mat.roughness = 0.12;
+  mat.metalness = 0.08;
+  mat.emissive.set('#0c2a33');
+  mat.emissiveIntensity = 0.3;
   const water = new THREE.Mesh(waterGeo, mat);
   water.position.set(-40, -1.25, -4);
   water.rotation.z = 0.5;
-  water.name = 'river';
+  water.name = 'water';
   scene.add(water);
 }
 
@@ -997,7 +1051,7 @@ function buildAtmosphere(scene: THREE.Scene, meta: MapMetadata) {
   const dustGeo = new THREE.BufferGeometry();
   dustGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({
-    color: 0xdfe7ee, size: 0.22, transparent: true, opacity: 0.35,
+    color: 0xdfe7ee, size: 0.22, transparent: true, opacity: 0.3,
     blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
   }));
   dust.name = 'dust';
@@ -1008,7 +1062,7 @@ function buildAtmosphere(scene: THREE.Scene, meta: MapMetadata) {
   );
   const rayGeo = new THREE.CylinderGeometry(6, 26, 220, 10, 1, true);
   const rayMat = new THREE.MeshBasicMaterial({
-    color: meta.sunColor, transparent: true, opacity: 0.05,
+    color: meta.sunColor, transparent: true, opacity: 0.06,
     side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false
   });
   const rays = new THREE.Mesh(rayGeo, rayMat);
@@ -1016,25 +1070,97 @@ function buildAtmosphere(scene: THREE.Scene, meta: MapMetadata) {
   rays.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sunPos.clone().normalize().multiplyScalar(-1));
   rays.name = 'godRays';
   scene.add(rays);
+
+  // Soft ground-hugging mist pools over the river and low ground. The radial
+  // alpha texture is generated at runtime (no external assets); headless
+  // contexts simply get faint additive discs. All pools bake into ONE mesh to
+  // keep the draw-call budget intact.
+  const mistTex = makeRadialTexture();
+  const mistSpots: [number, number, number, number][] = [
+    [-40, -4, 30, 11], [-28, -30, 22, 9], [-10, -70, 26, 10],
+    [24, -40, 20, 9], [58, 52, 24, 10], [-60, -18, 22, 9]
+  ];
+  const mistGeos: THREE.BufferGeometry[] = [];
+  mistSpots.forEach(([mx, mz, mw, md]) => {
+    const g = new THREE.PlaneGeometry(mw, md, 1, 1);
+    g.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+    g.applyMatrix4(new THREE.Matrix4().makeTranslation(mx, 0.55, mz));
+    mistGeos.push(g);
+  });
+  const mistMerged = mergeGeometries(mistGeos, false) ?? new THREE.BufferGeometry();
+  mistGeos.forEach((g) => g.dispose());
+  const mist = new THREE.Mesh(mistMerged, new THREE.MeshBasicMaterial({
+    color: '#c9d8e4', transparent: true, opacity: 0.09, map: mistTex,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false
+  }));
+  mist.name = 'mist';
+  scene.add(mist);
+}
+
+// Procedural radial-gradient texture (white centre -> transparent rim), used for
+// soft mist pools. Generated entirely in code — no external image assets.
+let cachedMistTex: THREE.CanvasTexture | null = null;
+function makeRadialTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  if (cachedMistTex) return cachedMistTex;
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+  if (!g) return null;
+  const grad = g.createRadialGradient(64, 64, 4, 64, 64, 62);
+  grad.addColorStop(0, 'rgba(255,255,255,0.85)');
+  grad.addColorStop(0.55, 'rgba(255,255,255,0.32)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  cachedMistTex = tex;
+  return tex;
 }
 
 // ------------------------------------------------------------
 // Gradient sky dome + sun glow (fully procedural, no textures)
 // ------------------------------------------------------------
-function buildSky(scene: THREE.Scene, meta: MapMetadata) {
+function buildSky(scene: THREE.Scene, meta: MapMetadata, sunDir: THREE.Vector3) {
   const R = 520;
-  const sky = new THREE.Color(meta.skyColor);
-  const horizon = new THREE.Color(meta.fogColor);
-  const ground = horizon.clone().multiplyScalar(0.8);
 
-  const geo = new THREE.SphereGeometry(R, 24, 12);
+  // Dusk colour ramp: deep zenith -> cool horizon base -> warm glow toward the
+  // sun azimuth -> deeper cool on the opposite side. Below the horizon the dome
+  // fades to a dark ground tint so there is never a visible seam.
+  const zenith = new THREE.Color(meta.skyColor).offsetHSL(0.02, 0.1, -0.03);
+  const horizon = new THREE.Color(meta.fogColor);
+  const warmGlow = new THREE.Color(meta.sunColor);
+  const coolHorizon = new THREE.Color(meta.hemisphereSky).multiplyScalar(0.85);
+  const groundTint = horizon.clone().multiplyScalar(0.42);
+  const sunH = new THREE.Vector3(sunDir.x, 0, sunDir.z);
+  if (sunH.lengthSq() < 1e-6) sunH.set(1, 0, 0);
+  sunH.normalize();
+
+  const geo = new THREE.SphereGeometry(R, 32, 16);
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
   const colors = new Float32Array(pos.count * 3);
   const tmp = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
-    const t = THREE.MathUtils.clamp(pos.getY(i) / R, -1, 1);
-    if (t >= 0) tmp.copy(horizon).lerp(sky, t);
-    else tmp.copy(horizon).lerp(ground, -t);
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const t = THREE.MathUtils.clamp(y / R, -1, 1);
+
+    if (t >= 0) {
+      // Vertical: horizon -> zenith (non-linear for a taller sky feel).
+      tmp.copy(horizon).lerp(zenith, Math.pow(t, 0.72));
+      // Azimuthal: warm toward the sun, cool away from it, strongest at the horizon.
+      const hlen = Math.hypot(x, z);
+      const align = hlen < 1e-4 ? 0 : (x * sunH.x + z * sunH.z) / hlen;
+      const horizonFall = Math.pow(1 - t, 1.6);
+      tmp.lerp(warmGlow, Math.max(0, align) * 0.5 * horizonFall);
+      tmp.lerp(coolHorizon, Math.max(0, -align) * 0.32 * horizonFall);
+    } else {
+      tmp.copy(horizon).lerp(groundTint, Math.min(1, -t * 1.4));
+    }
+
     colors[i * 3] = tmp.r;
     colors[i * 3 + 1] = tmp.g;
     colors[i * 3 + 2] = tmp.b;
@@ -1048,28 +1174,65 @@ function buildSky(scene: THREE.Scene, meta: MapMetadata) {
   dome.renderOrder = -10;
   scene.add(dome);
 
-  // Sun disc + soft halo — unlit, unaffected by fog/tonemapping.
-  const sunDir = new THREE.Vector3().setFromSphericalCoords(
-    1, THREE.MathUtils.degToRad(90 - meta.sunElevation), THREE.MathUtils.degToRad(meta.sunAzimuth)
-  );
-  const disc = new THREE.Mesh(
-    new THREE.SphereGeometry(16, 16, 12),
-    new THREE.MeshBasicMaterial({ color: meta.sunColor, fog: false, toneMapped: false })
-  );
-  disc.position.copy(sunDir).multiplyScalar(R * 0.86);
-  disc.name = 'sunDisc';
-  scene.add(disc);
+  // Layered sun: bright core + inner glow + wide corona (all unlit and
+  // unaffected by fog/tonemapping so they stay crisp against the dome).
+  const sunPos = sunDir.clone().multiplyScalar(R * 0.88);
 
-  const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(42, 16, 12),
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(13, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0xfff8e8, fog: false, toneMapped: false })
+  );
+  core.position.copy(sunPos);
+  core.name = 'sunCore';
+  scene.add(core);
+
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(30, 16, 12),
     new THREE.MeshBasicMaterial({
-      color: meta.sunColor, transparent: true, opacity: 0.28, fog: false, toneMapped: false,
+      color: meta.sunColor, transparent: true, opacity: 0.42, fog: false, toneMapped: false,
       blending: THREE.AdditiveBlending, depthWrite: false
     })
   );
-  halo.position.copy(disc.position);
-  halo.name = 'sunHalo';
-  scene.add(halo);
+  glow.position.copy(sunPos);
+  glow.name = 'sunGlow';
+  scene.add(glow);
+
+  const corona = new THREE.Mesh(
+    new THREE.SphereGeometry(72, 16, 12),
+    new THREE.MeshBasicMaterial({
+      color: meta.sunColor, transparent: true, opacity: 0.15, fog: false, toneMapped: false,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  corona.position.copy(sunPos);
+  corona.name = 'sunCorona';
+  scene.add(corona);
+
+  // Early stars for dusk/night themes — sparse, faint and only above the horizon.
+  if (meta.theme === 'dusk' || meta.theme === 'night') {
+    const starCount = 150;
+    const starPos = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const dir = new THREE.Vector3(
+        Math.random() * 2 - 1,
+        Math.random() * 0.9 + 0.1,
+        Math.random() * 2 - 1
+      ).normalize();
+      dir.multiplyScalar(R * 0.97);
+      starPos[i * 3] = dir.x;
+      starPos[i * 3 + 1] = dir.y;
+      starPos[i * 3 + 2] = dir.z;
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
+      color: 0xffffff, size: 1.7, sizeAttenuation: false, transparent: true,
+      opacity: 0.65, fog: false, toneMapped: false, depthWrite: false
+    }));
+    stars.name = 'stars';
+    stars.renderOrder = -9;
+    scene.add(stars);
+  }
 }
 
 // ------------------------------------------------------------
@@ -1168,16 +1331,23 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
   const ladders: { x: number; z: number; topY: number; baseY: number }[] = [];
   const explosives: CoverObstacle3D[] = [];
 
-  // Atmosphere + lights — tuned bright so players, terrain and cover all read
-  // clearly at range even on dim mobile screens.
+  // ---- Lighting rig (cinematic three-point) ----
+  // Warm key (sun) + cool sky fill from the opposite azimuth + a soft top-down
+  // skylight. Only the sun casts shadows. Everything is tuned so terrain,
+  // cover and operators read clearly at range on dim mobile screens.
   scene.fog = new THREE.FogExp2(meta.fogColor, meta.fogDensity);
-  scene.add(new THREE.HemisphereLight(meta.hemisphereSky, meta.hemisphereGround, 1.05));
-  scene.add(new THREE.AmbientLight(meta.ambientColor, 0.55));
 
   const sunDir = new THREE.Vector3().setFromSphericalCoords(
     1, THREE.MathUtils.degToRad(90 - meta.sunElevation), THREE.MathUtils.degToRad(meta.sunAzimuth)
   );
-  const sun = new THREE.DirectionalLight(meta.sunColor, 2.8);
+
+  const hemi = new THREE.HemisphereLight(meta.hemisphereSky, meta.hemisphereGround, 1.15);
+  scene.add(hemi);
+
+  const ambient = new THREE.AmbientLight(meta.ambientColor, 0.5);
+  scene.add(ambient);
+
+  const sun = new THREE.DirectionalLight(meta.sunColor, 3.1);
   sun.position.copy(sunDir).multiplyScalar(120);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
@@ -1188,11 +1358,25 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
   sun.shadow.camera.right = sc;
   sun.shadow.camera.top = sc;
   sun.shadow.camera.bottom = -sc;
-  sun.shadow.bias = -0.0004;
+  sun.shadow.bias = -0.0003;
+  sun.shadow.normalBias = 0.02;
   scene.add(sun);
 
+  // Cool sky fill from the opposite side (no shadow) — lifts the shadowed
+  // faces so the dark side of buildings/terrain never goes pitch black.
+  const fillDir = sunDir.clone().multiplyScalar(-1);
+  fillDir.y = Math.max(0.25, fillDir.y);
+  const fill = new THREE.DirectionalLight(meta.hemisphereSky, 0.6);
+  fill.position.copy(fillDir).multiplyScalar(120);
+  scene.add(fill);
+
+  // Soft skylight from above — separates rooftops and hill crests from the sky.
+  const skylight = new THREE.DirectionalLight(meta.hemisphereSky, 0.4);
+  skylight.position.set(0, 130, 0);
+  scene.add(skylight);
+
   // Ground
-  const { getHeightAt, bounds } = buildGround(scene, meta, mapId);
+  const { getHeightAt, bounds } = buildGround(scene, meta, mapId, sunDir);
 
   // Roads + river
   if (mapId === 'warzone') {
@@ -1249,7 +1433,7 @@ export function buildMapEnvironment(mapId: MapId, scene: THREE.Scene): MapEnviro
 
   // Atmosphere particles + gradient sky
   buildAtmosphere(scene, meta);
-  buildSky(scene, meta);
+  buildSky(scene, meta, sunDir);
 
   // Loot
   const loot = (

@@ -335,7 +335,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
     const scene = new THREE.Scene();
     const meta = MAP_CATALOG[mapId];
-    scene.background = new THREE.Color(meta.skyColor);
+    // Background matches the horizon so the sky dome blends seamlessly.
+    scene.background = new THREE.Color(meta.fogColor);
 
     const env = buildMapEnvironment(mapId, scene);
     const { obstacles, safeZone, lootItems, getHeightAt, ladders, explosives } = env;
@@ -1638,11 +1639,35 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         setNearbyLoot(nearLoot);
       }
 
-      // ---- Ambient ----
+      // ---- Ambient animation (water waves, mist breathing, dust drift) ----
       const dust = scene.getObjectByName('dust');
       if (dust) dust.rotation.y += dt * 0.008;
+
       const rays = scene.getObjectByName('godRays');
-      if (rays) ((rays as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.045 + Math.sin(now * 0.0004) * 0.015;
+      if (rays) ((rays as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.05 + Math.sin(now * 0.0004) * 0.018;
+
+      const waterMesh = scene.getObjectByName('water');
+      if (waterMesh) {
+        const wg = (waterMesh as THREE.Mesh).geometry;
+        const wPos = wg.getAttribute('position') as THREE.BufferAttribute;
+        const baseZ = wg.userData.baseZ as Float32Array | undefined;
+        if (baseZ) {
+          for (let i = 0; i < wPos.count; i++) {
+            const x = wPos.getX(i);
+            const y = wPos.getY(i);
+            wPos.setZ(i, baseZ[i]
+              + Math.sin(x * 0.9 + now * 0.0016) * 0.05
+              + Math.sin(y * 1.4 - now * 0.0021) * 0.03);
+          }
+          wPos.needsUpdate = true;
+        }
+      }
+
+      const mist = scene.getObjectByName('mist');
+      if (mist) {
+        const mm = (mist as THREE.Mesh).material as THREE.MeshBasicMaterial;
+        mm.opacity = 0.08 + Math.sin(now * 0.0005) * 0.025;
+      }
 
       // ---- Net sync ----
       if (mode !== 'ai' && now - lastNetSync > 80) {
