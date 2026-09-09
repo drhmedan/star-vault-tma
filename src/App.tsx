@@ -16,6 +16,7 @@ import { Inventory } from './components/Inventory';
 import { PvPLobby } from './components/PvPLobby';
 import { CyberTacticsArena } from './components/CyberTacticsArena';
 import { PubgArena } from './components/PubgArena';
+import { Pubg3DArena } from './components/Pubg3DArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
 import { sound } from './audio/soundEngine';
 
@@ -222,10 +223,10 @@ export const App: React.FC = () => {
 
       {/* Main View Area */}
       <main className="p-4 flex-1 pb-24">
-        {/* TAB 1: CYBER WAR (ONLINE PVP) */}
+        {/* TAB 1: CYBER WAR (ONLINE PVP 3D) */}
         {tab === 'cyberwar' && (
           activeMatch ? (
-            <PubgArena 
+            <Pubg3DArena 
               user={user}
               roomCode={activeMatch.roomCode}
               mode={activeMatch.mode}
