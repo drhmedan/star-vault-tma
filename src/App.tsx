@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Package, Star, Swords, Disc, Users, ShoppingBag, 
-  Sparkles, CheckCircle, Volume2, VolumeX, Backpack
+  Sparkles, CheckCircle, Volume2, VolumeX, Backpack, Shield, Crosshair
 } from 'lucide-react';
 import { UserProfile, VaultCase, VaultItem, WheelSegment } from './types';
 import { VAULT_CASES, ALL_ITEMS } from './data/vaultsData';
@@ -13,35 +13,57 @@ import { CaseBattles } from './components/CaseBattles';
 import { StarsShop } from './components/StarsShop';
 import { ReferralHub } from './components/ReferralHub';
 import { Inventory } from './components/Inventory';
+import { PvPLobby } from './components/PvPLobby';
+import { CyberTacticsArena } from './components/CyberTacticsArena';
+import { CommanderLoadout } from './components/CommanderLoadout';
 import { sound } from './audio/soundEngine';
 
-type TabType = 'vaults' | 'wheel' | 'battles' | 'shop' | 'referrals' | 'inventory';
+type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals';
 
 export const App: React.FC = () => {
-  const [tab, setTab] = useState<TabType>('vaults');
+  const [tab, setTab] = useState<TabType>('cyberwar');
   const [muted, setMuted] = useState(false);
   const [activeUnboxingCase, setActiveUnboxingCase] = useState<VaultCase | null>(null);
+
+  // Active Tactical PvP match state
+  const [activeMatch, setActiveMatch] = useState<{
+    roomCode: string;
+    mode: 'host' | 'join' | 'ai';
+    stakeStars: number;
+  } | null>(null);
 
   // Initialize or load user profile
   const [user, setUser] = useState<UserProfile>(() => {
     const saved = localStorage.getItem('star_vault_user');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        return {
+          ...parsed,
+          trophies: parsed.trophies || 120,
+          equippedLoadout: parsed.equippedLoadout || {
+            weaponItemId: ALL_ITEMS.combat_knife.id,
+            armorItemId: undefined
+          }
+        };
       } catch (e) {}
     }
 
     // Default starting state
     return {
       id: Math.floor(100000 + Math.random() * 900000),
-      username: 'sovereign_player',
-      firstName: 'القائد المغامر',
-      stars: 75, // Starting test grant of Stars
-      starDust: 250,
+      username: 'cyber_commander',
+      firstName: 'القائد السيبراني',
+      stars: 100, // Starting test grant of Stars
+      starDust: 350,
       keys: { cyber_silver: 1 },
-      level: 2,
+      level: 3,
+      trophies: 120,
       isVip: false,
-      inventory: [ALL_ITEMS.combat_knife, ALL_ITEMS.silver_bar],
+      inventory: [ALL_ITEMS.combat_knife, ALL_ITEMS.silver_bar, ALL_ITEMS.sovereign_blade],
+      equippedLoadout: {
+        weaponItemId: ALL_ITEMS.combat_knife.id
+      },
       lastDailySpin: 0,
       lastFreeCase: 0,
       refCode: 'REF' + Math.floor(1000 + Math.random() * 9000),
@@ -50,7 +72,7 @@ export const App: React.FC = () => {
     };
   });
 
-  // Telegram Mini App Initialization
+  // Telegram Mini App Initialization & Direct Invite Link listener
   useEffect(() => {
     const tg = (window as any).Telegram?.WebApp;
     if (tg) {
@@ -71,6 +93,18 @@ export const App: React.FC = () => {
           firstName: tgUser.first_name || prev.firstName
         }));
       }
+
+      // Check deep link start parameter (e.g. ?startapp=pvp_CYBER-XYZ)
+      const startParam = tg.initDataUnsafe?.start_param || '';
+      if (startParam.startsWith('pvp_')) {
+        const roomToJoin = startParam.replace('pvp_', '');
+        setActiveMatch({
+          roomCode: roomToJoin,
+          mode: 'join',
+          stakeStars: 0
+        });
+        setTab('cyberwar');
+      }
     }
   }, []);
 
@@ -79,7 +113,7 @@ export const App: React.FC = () => {
     localStorage.setItem('star_vault_user', JSON.stringify(user));
   }, [user]);
 
-  // Actions
+  // Case Actions
   const handleOpenCase = (c: VaultCase) => {
     if (c.isDailyFree) {
       setUser(p => ({ ...p, lastFreeCase: Date.now() }));
@@ -122,14 +156,6 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleBattleWin = (wonItems: VaultItem[], starsWon: number) => {
-    setUser(p => ({
-      ...p,
-      stars: p.stars + starsWon,
-      inventory: [...wonItems, ...p.inventory]
-    }));
-  };
-
   const handleStarsPurchased = (stars: number) => {
     setUser(p => ({
       ...p,
@@ -159,6 +185,27 @@ export const App: React.FC = () => {
     }));
   };
 
+  // PvP Tactical Handlers
+  const handleStartPvPMatch = (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number) => {
+    if (stakeStars > 0 && user.stars < stakeStars) {
+      setTab('shop');
+      return;
+    }
+    if (stakeStars > 0) {
+      setUser(p => ({ ...p, stars: p.stars - stakeStars }));
+    }
+    setActiveMatch({ roomCode, mode, stakeStars });
+  };
+
+  const handleMatchComplete = (won: boolean, trophiesDelta: number, dustDelta: number, starsDelta: number) => {
+    setUser(p => ({
+      ...p,
+      trophies: Math.max(0, (p.trophies || 0) + trophiesDelta),
+      starDust: p.starDust + dustDelta,
+      stars: p.stars + starsDelta
+    }));
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between max-w-lg mx-auto border-x border-slate-800/40 shadow-2xl relative" dir="rtl">
       {/* Top Header */}
@@ -174,6 +221,36 @@ export const App: React.FC = () => {
 
       {/* Main View Area */}
       <main className="p-4 flex-1 pb-24">
+        {/* TAB 1: CYBER WAR (ONLINE PVP) */}
+        {tab === 'cyberwar' && (
+          activeMatch ? (
+            <CyberTacticsArena 
+              user={user}
+              roomCode={activeMatch.roomCode}
+              mode={activeMatch.mode}
+              stakeStars={activeMatch.stakeStars}
+              onExit={() => setActiveMatch(null)}
+              onMatchComplete={handleMatchComplete}
+            />
+          ) : (
+            <PvPLobby 
+              user={user}
+              onStartMatch={handleStartPvPMatch}
+              onOpenLoadout={() => setTab('loadout')}
+            />
+          )
+        )}
+
+        {/* TAB 2: COMMANDER LOADOUT */}
+        {tab === 'loadout' && (
+          <CommanderLoadout 
+            user={user}
+            onUpdateLoadout={(loadout) => setUser(p => ({ ...p, equippedLoadout: loadout }))}
+            onBack={() => setTab('cyberwar')}
+          />
+        )}
+
+        {/* TAB 3: VAULTS & CASES */}
         {tab === 'vaults' && (
           <VaultsGrid 
             userStars={user.stars}
@@ -183,6 +260,7 @@ export const App: React.FC = () => {
           />
         )}
 
+        {/* TAB 4: LUCKY WHEEL */}
         {tab === 'wheel' && (
           <LuckyWheel 
             userStars={user.stars}
@@ -192,23 +270,25 @@ export const App: React.FC = () => {
           />
         )}
 
-        {tab === 'battles' && (
-          <CaseBattles 
-            user={user}
-            onBattleWin={handleBattleWin}
-            onOpenShop={() => setTab('shop')}
-          />
-        )}
-
+        {/* TAB 5: STARS SHOP */}
         {tab === 'shop' && (
           <StarsShop 
             onStarsPurchased={handleStarsPurchased}
             onActivateAutoMiner={handleActivateAutoMiner}
             autoMinerActive={!!user.autoMinerActiveUntil && user.autoMinerActiveUntil > Date.now()}
-            onClose={() => setTab('vaults')}
+            onClose={() => setTab('cyberwar')}
           />
         )}
 
+        {/* TAB 6: INVENTORY */}
+        {tab === 'inventory' && (
+          <Inventory 
+            items={user.inventory}
+            onSellItem={handleInventorySell}
+          />
+        )}
+
+        {/* TAB 7: REFERRAL */}
         {tab === 'referrals' && (
           <ReferralHub 
             user={user}
@@ -222,13 +302,6 @@ export const App: React.FC = () => {
                 }));
               }
             }}
-          />
-        )}
-
-        {tab === 'inventory' && (
-          <Inventory 
-            items={user.inventory}
-            onSellItem={handleInventorySell}
           />
         )}
       </main>
@@ -248,11 +321,12 @@ export const App: React.FC = () => {
       {/* Sticky Bottom Navigation Bar (TMA Standard) */}
       <nav className="fixed bottom-0 inset-x-0 max-w-lg mx-auto bg-slate-950/95 backdrop-blur-lg border-t border-slate-800/80 px-2 py-2 flex justify-around items-center z-40">
         {[
-          { id: 'vaults', label: 'الخزائن', icon: Package },
+          { id: 'cyberwar', label: 'ساحة الحرب', icon: Swords },
+          { id: 'loadout', label: 'العتاد', icon: Shield },
+          { id: 'vaults', label: 'الصناديق', icon: Package },
           { id: 'wheel', label: 'العجلة', icon: Disc },
-          { id: 'battles', label: 'المعارك', icon: Swords },
-          { id: 'shop', label: 'النجوم', icon: Star },
           { id: 'inventory', label: 'حقيبتي', icon: Backpack },
+          { id: 'shop', label: 'النجوم', icon: Star },
           { id: 'referrals', label: 'الإحالات', icon: Users }
         ].map(item => {
           const isActive = tab === item.id;
@@ -260,9 +334,9 @@ export const App: React.FC = () => {
           return (
             <button
               key={item.id}
-              className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all ${
+              className={`flex flex-col items-center justify-center py-1 px-1.5 rounded-xl transition-all ${
                 isActive 
-                  ? 'text-amber-400 font-bold scale-105' 
+                  ? 'text-cyan-400 font-bold scale-105' 
                   : 'text-slate-400 hover:text-slate-200'
               }`}
               onClick={() => {
