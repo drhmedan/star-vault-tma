@@ -271,7 +271,7 @@ export function buildMapEnvironment(
       obstacles.push({ mesh: container, box: new THREE.Box3().setFromObject(container), type: 'crate' });
     });
 
-    // Four elevated watchtowers with steel legs, decks, and railings.
+    // Four elevated watchtowers with steel legs, decks, railings, and climbing ladders.
     [[-38, -32], [38, -32], [-38, 32], [38, 32]].forEach(([x, z]) => {
       const tower = new THREE.Group();
       [-1, 1].forEach((dx) => [-1, 1].forEach((dz) => {
@@ -288,6 +288,12 @@ export function buildMapEnvironment(
         rail.position.set(v, 10.5, 0);
         tower.add(rail);
       });
+      // Climbing ladder rungs on North face (player can climb up to snipe!)
+      for (let ly = 0.5; ly < 9.8; ly += 0.45) {
+        const rung = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.08, 0.08), new THREE.MeshStandardMaterial({ color: '#f59e0b', roughness: 0.5, metalness: 0.7 }));
+        rung.position.set(0, ly, 2.35);
+        tower.add(rung);
+      }
       tower.position.set(x, 0, z);
       tower.traverse((child) => { if (child instanceof THREE.Mesh) child.castShadow = true; });
       scene.add(tower);
@@ -317,9 +323,15 @@ export function buildMapEnvironment(
     scene.add(armory);
     obstacles.push({ mesh: armory, box: new THREE.Box3(new THREE.Vector3(-44, 0, 36), new THREE.Vector3(-12, 6, 60)), type: 'building' });
 
+    // Armed Combat Technical Vehicle (With Mounted Dual Autocannon Turret)
+    const combatTruck = create3DCombatTechnical('#1e3a5f');
+    combatTruck.position.set(0, 0, 12);
+    scene.add(combatTruck);
+    obstacles.push({ mesh: combatTruck, box: new THREE.Box3().setFromObject(combatTruck), type: 'car' });
+
     // Tactical Armored Vehicles as Heavy Roadside Cover
     const jeepSouth = create3DCar('#1e3a8a');
-    jeepSouth.position.set(-5, 0, 18);
+    jeepSouth.position.set(-5, 0, 26);
     jeepSouth.rotation.y = 0.35;
     scene.add(jeepSouth);
     obstacles.push({ mesh: jeepSouth, box: new THREE.Box3().setFromObject(jeepSouth), type: 'car' });
@@ -348,12 +360,14 @@ export function buildMapEnvironment(
   const lootConfigs: Array<{
     id: string;
     type: 'weapon' | 'ammo' | 'medkit';
-    weaponType?: 'ak47' | 'awm' | 'shotgun';
+    weaponType?: 'ak47' | 'awm' | 'shotgun' | 'rpg';
     nameAr: string;
     icon: string;
     color: string;
     pos: THREE.Vector3;
   }> = mapId === 'warzone' ? [
+    { id: 'loot-rpg-1', type: 'weapon', weaponType: 'rpg', nameAr: 'قاذف صواريخ RPG-7 (بازوكا)', icon: '🚀', color: '#ea580c', pos: new THREE.Vector3(0, 0.4, -4) }, // Center Highway near depot
+    { id: 'loot-rpg-2', type: 'weapon', weaponType: 'rpg', nameAr: 'قاذف صواريخ RPG-7 (بازوكا)', icon: '🚀', color: '#ea580c', pos: new THREE.Vector3(-38, 10.2, 32) }, // Sniper watchtower roof
     { id: 'loot-awm-1', type: 'weapon', weaponType: 'awm', nameAr: 'قناصة AWM الأسطورية', icon: '🎯', color: '#10b981', pos: new THREE.Vector3(38, 10.2, -32) }, // At top of watchtower!
     { id: 'loot-awm-2', type: 'weapon', weaponType: 'awm', nameAr: 'قناصة AWM الأسطورية', icon: '🎯', color: '#10b981', pos: new THREE.Vector3(-25, 0.4, 48) }, // Inside South Armory
     { id: 'loot-shotgun-1', type: 'weapon', weaponType: 'shotgun', nameAr: 'شوزن قتالي S1897', icon: '💥', color: '#ef4444', pos: new THREE.Vector3(25, 0.4, -28) }, // Inside North Depot
@@ -363,6 +377,7 @@ export function buildMapEnvironment(
     { id: 'loot-med-1', type: 'medkit', nameAr: 'حقيبة إسعاف (Medkit)', icon: '🩹', color: '#06b6d4', pos: new THREE.Vector3(10, 0.3, -22) },
     { id: 'loot-med-2', type: 'medkit', nameAr: 'حقيبة إسعاف (Medkit)', icon: '🩹', color: '#06b6d4', pos: new THREE.Vector3(-38, 10.2, 32) }
   ] : [
+    { id: 'loot-rpg', type: 'weapon', weaponType: 'rpg', nameAr: 'قاذف صواريخ RPG-7 (بازوكا)', icon: '🚀', color: '#ea580c', pos: new THREE.Vector3(0, 0.4, 0) },
     { id: 'loot-awm', type: 'weapon', weaponType: 'awm', nameAr: 'قناصة AWM الأسطورية', icon: '🎯', color: '#10b981', pos: new THREE.Vector3(12, 0.4, -14) },
     { id: 'loot-shotgun', type: 'weapon', weaponType: 'shotgun', nameAr: 'شوزن قتالي S1897', icon: '💥', color: '#ef4444', pos: new THREE.Vector3(-14, 0.4, -6) },
     { id: 'loot-ammo-1', type: 'ammo', nameAr: 'ذخيرة ثقيلة (+60)', icon: '⚡', color: '#f59e0b', pos: new THREE.Vector3(0, 0.3, 12) },
@@ -380,14 +395,35 @@ export function buildMapEnvironment(
     ringMesh.position.y = 0.05;
     lootGroup.add(ringMesh);
 
-    // Floating 3D Weapon/Box representation
-    const boxMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.8, 0.3, 0.4),
-      new THREE.MeshStandardMaterial({ color: lc.color, roughness: 0.3, metalness: 0.7 })
-    );
-    boxMesh.position.y = 0.35;
-    boxMesh.castShadow = true;
-    lootGroup.add(boxMesh);
+    if (lc.weaponType === 'rpg') {
+      // 3D Realistic RPG-7 Model on Ground
+      const tube = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.08, 1.2, 8),
+        new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.6, metalness: 0.7 })
+      );
+      tube.rotation.z = Math.PI / 2;
+      tube.position.y = 0.22;
+      tube.castShadow = true;
+      lootGroup.add(tube);
+
+      const warhead = new THREE.Mesh(
+        new THREE.ConeGeometry(0.18, 0.38, 8),
+        new THREE.MeshStandardMaterial({ color: '#ea580c', roughness: 0.4, metalness: 0.5 })
+      );
+      warhead.rotation.z = -Math.PI / 2;
+      warhead.position.set(0.72, 0.22, 0);
+      warhead.castShadow = true;
+      lootGroup.add(warhead);
+    } else {
+      // Floating 3D Weapon/Box representation
+      const boxMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(0.8, 0.3, 0.4),
+        new THREE.MeshStandardMaterial({ color: lc.color, roughness: 0.3, metalness: 0.7 })
+      );
+      boxMesh.position.y = 0.35;
+      boxMesh.castShadow = true;
+      lootGroup.add(boxMesh);
+    }
 
     lootGroup.position.copy(lc.pos);
     scene.add(lootGroup);
@@ -425,6 +461,81 @@ export function buildMapEnvironment(
   };
 
   return { obstacles, safeZone, lootItems };
+}
+
+// 3D Armed Combat Technical / Gun Truck Helper
+export function create3DCombatTechnical(color: string): THREE.Group {
+  const truck = new THREE.Group();
+  const armorMat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.5 });
+  const darkSteel = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.4, metalness: 0.8 });
+
+  // Lower chassis
+  const chassis = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.75, 5.2), armorMat);
+  chassis.position.y = 0.8;
+  chassis.castShadow = true;
+  truck.add(chassis);
+
+  // Front cabin
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.95, 2.2), armorMat);
+  cabin.position.set(0, 1.65, 0.8);
+  cabin.castShadow = true;
+  truck.add(cabin);
+
+  // Windshield armored slit
+  const slit = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.35, 0.1), darkSteel);
+  slit.position.set(0, 1.75, 1.92);
+  truck.add(slit);
+
+  // Front Heavy Bullbar / Ram
+  const bullbar = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.8, 0.4), darkSteel);
+  bullbar.position.set(0, 0.85, 2.7);
+  bullbar.castShadow = true;
+  truck.add(bullbar);
+
+  // Rear Flatbed side walls
+  [-1.2, 1.2].forEach(x => {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.7, 2.4), darkSteel);
+    wall.position.set(x, 1.4, -1.3);
+    truck.add(wall);
+  });
+
+  // Heavy Gunner Tripod & Turret
+  const turretMount = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.35, 0.9, 8), darkSteel);
+  turretMount.position.set(0, 1.65, -1.3);
+  truck.add(turretMount);
+
+  // Gunner Armor Shield Plate
+  const shieldPlate = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.7, 0.08), darkSteel);
+  shieldPlate.position.set(0, 2.15, -1.05);
+  truck.add(shieldPlate);
+
+  // Dual Heavy Autocannon Barrels
+  const barrelMat = new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.3, metalness: 0.9 });
+  [-0.14, 0.14].forEach(bx => {
+    const b = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.6, 8), barrelMat);
+    b.rotation.x = Math.PI / 2;
+    b.position.set(bx, 2.15, -0.3);
+    truck.add(b);
+  });
+
+  // 4 Heavy All-Terrain Tires
+  const tireGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.45, 16);
+  const tireMat = new THREE.MeshStandardMaterial({ color: '#09090b', roughness: 0.9 });
+  [
+    { x: -1.35, z: 1.6 },
+    { x: 1.35, z: 1.6 },
+    { x: -1.35, z: -1.6 },
+    { x: 1.35, z: -1.6 }
+  ].forEach(tp => {
+    const tire = new THREE.Mesh(tireGeo, tireMat);
+    tire.rotation.z = Math.PI / 2;
+    tire.position.set(tp.x, 0.55, tp.z);
+    tire.castShadow = true;
+    truck.add(tire);
+  });
+
+  truck.userData = { isCombatVehicle: true, vehicleType: 'technical', maxArmor: 250, armor: 250 };
+  return truck;
 }
 
 // 3D Car Helper

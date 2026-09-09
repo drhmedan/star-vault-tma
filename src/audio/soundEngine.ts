@@ -189,7 +189,7 @@ class SoundEngine {
     osc.stop(t + 0.13);
   }
 
-  // 7. Tactical Explosion (Bomb/Mortar impact)
+  // 7. Tactical Explosion (Bomb/Mortar/RPG impact with noise crackle and sub-bass)
   public playExplosion() {
     if (this.muted) return;
     const ctx = this.getContext();
@@ -199,15 +199,37 @@ class SoundEngine {
     // Sub-rumble
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(140, t);
-    osc.frequency.exponentialRampToValueAtTime(25, t + 0.45);
-    gain.gain.setValueAtTime(0.28, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(160, t);
+    osc.frequency.exponentialRampToValueAtTime(20, t + 0.55);
+    gain.gain.setValueAtTime(0.38, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(t);
-    osc.stop(t + 0.45);
+    osc.stop(t + 0.55);
+
+    // Explosive blast noise
+    const noiseLen = Math.floor(ctx.sampleRate * 0.35);
+    const noiseBuf = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
+    const data = noiseBuf.getChannelData(0);
+    for (let i = 0; i < noiseLen; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.07));
+    }
+    const noiseSrc = ctx.createBufferSource();
+    noiseSrc.buffer = noiseBuf;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(850, t);
+    filter.frequency.exponentialRampToValueAtTime(110, t + 0.35);
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.32, t);
+    nGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    noiseSrc.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(ctx.destination);
+    noiseSrc.start(t);
+    noiseSrc.stop(t + 0.35);
   }
 
   // 8. Shield Activation & Deflection
@@ -220,17 +242,39 @@ class SoundEngine {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(320, t);
-    osc.frequency.linearRampToValueAtTime(680, t + 0.18);
-    gain.gain.setValueAtTime(0.12, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    osc.frequency.setValueAtTime(580, t);
+    osc.frequency.exponentialRampToValueAtTime(1200, t + 0.2);
+    gain.gain.setValueAtTime(0.15, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(t);
-    osc.stop(t + 0.25);
+    osc.stop(t + 0.2);
   }
 
-  // 9. EMP Jammer Pulse
+  // 9. Cyber Level Up / Achievement Fanfare
+  public playLevelUp() {
+    if (this.muted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const t = ctx.currentTime;
+    const notes = [440, 554.37, 659.25, 880];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t + idx * 0.06);
+      gain.gain.setValueAtTime(0.12, t + idx * 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.06 + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t + idx * 0.06);
+      osc.stop(t + idx * 0.06 + 0.25);
+    });
+  }
+
+  // EMP Jammer Pulse
   public playEmp() {
     if (this.muted) return;
     const ctx = this.getContext();
@@ -251,15 +295,42 @@ class SoundEngine {
     osc.stop(t + 0.3);
   }
 
-  // 10. PUBG Weapon Gunshot Synthesizer (AK47, AWM, Shotgun, MP5, Pistol)
-  public playGunshot(weapon: 'ak47' | 'awm' | 'shotgun' | 'mp5' | 'pistol' = 'ak47') {
+  // 10. PUBG Weapon Gunshot Synthesizer (AK47, AWM, Shotgun, MP5, Pistol, RPG, Autocannon)
+  public playGunshot(weapon: 'ak47' | 'awm' | 'shotgun' | 'mp5' | 'pistol' | 'rpg' | 'autocannon' = 'ak47') {
     if (this.muted) return;
     const ctx = this.getContext();
     if (!ctx) return;
 
     const t = ctx.currentTime;
 
-    if (weapon === 'awm') {
+    if (weapon === 'rpg') {
+      // Rocket Thruster Ignition Whoosh & Pop
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(90, t);
+      osc.frequency.exponentialRampToValueAtTime(360, t + 0.16);
+      osc.frequency.exponentialRampToValueAtTime(70, t + 0.42);
+      gain.gain.setValueAtTime(0.35, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.42);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.42);
+    } else if (weapon === 'autocannon') {
+      // Heavy 20mm Vehicle Autocannon
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(170, t);
+      osc.frequency.exponentialRampToValueAtTime(28, t + 0.14);
+      gain.gain.setValueAtTime(0.36, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.14);
+    } else if (weapon === 'awm') {
       // Heavy Sniper Cannon Blast + Sub Boom
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();

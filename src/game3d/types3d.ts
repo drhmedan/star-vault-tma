@@ -11,7 +11,7 @@ export interface WeaponSlotState {
   id: WeaponSlotId;
   name: string;
   nameAr: string;
-  weaponType: 'ak47' | 'awm' | 'shotgun' | 'mp5' | 'pistol';
+  weaponType: 'ak47' | 'awm' | 'shotgun' | 'mp5' | 'pistol' | 'rpg';
   damage: number;
   fireRateMs: number;
   magazineSize: number;
@@ -24,7 +24,7 @@ export interface WeaponSlotState {
 export interface LootItem3D {
   id: string;
   type: 'weapon' | 'ammo' | 'medkit';
-  weaponType?: 'ak47' | 'awm' | 'shotgun';
+  weaponType?: 'ak47' | 'awm' | 'shotgun' | 'rpg';
   nameAr: string;
   icon: string;
   mesh: THREE.Group;

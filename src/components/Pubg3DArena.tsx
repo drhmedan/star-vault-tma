@@ -99,6 +99,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   // Nearby Ground Loot Pickup Prompt
   const [nearbyLoot, setNearbyLoot] = useState<LootItem3D | null>(null);
   const [damageFeed, setDamageFeed] = useState<string | null>(null);
+  const [isVehicleMounted, setIsVehicleMounted] = useState<boolean>(false);
+  const [nearbyVehicle, setNearbyVehicle] = useState<boolean>(false);
 
   // Game Coordinates & Physics Refs (Distant Tactical Spawns: South Base vs North Outpost)
   const playerPosRef = useRef<THREE.Vector3>(new THREE.Vector3(-25, 0, 50));
@@ -108,6 +110,15 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const isAimingRef = useRef<boolean>(false);
   const isFiringRef = useRef<boolean>(false);
   const lastFireTimeRef = useRef<number>(0);
+  const isVehicleMountedRef = useRef<boolean>(false);
+  const isNearVehicleRef = useRef<boolean>(false);
+  const cameraShakeRef = useRef<number>(0);
+  const activeRocketsRef = useRef<Array<{
+    mesh: THREE.Group;
+    light: THREE.PointLight;
+    velocity: THREE.Vector3;
+    spawnTime: number;
+  }>>([]);
 
   const opponentPosRef = useRef<THREE.Vector3>(new THREE.Vector3(25, 0, -50));
   const opponentHpRef = useRef<number>(100);
@@ -362,62 +373,123 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const { yaw, pitch } = playerAnglesRef.current;
       const curViewMode = viewModeRef.current;
 
-      // 1. Tactical locomotion: sprint, crouch, prone/crawl, and vault impulse.
-      const moving = Boolean(keys.current['w'] || keys.current['a'] || keys.current['s'] || keys.current['d']);
-      const isProne = proneRef.current;
-      const isVaulting = keys.current[' '] && moving && pos.y <= 0.05 && Date.now() - lastJumpRef.current > 500;
-      const moveSpeed = isProne ? 1.25 : isCrouchedRef.current ? 2.8 : sprintRef.current ? 9.2 : 5.8;
-      const nextLocomotion: LocomotionState = isVaulting ? 'vault' : isProne ? (moving ? 'crawl' : 'prone') : isCrouchedRef.current ? 'crouch' : sprintRef.current && moving ? 'sprint' : moving ? 'idle' : 'idle';
-      if (nextLocomotion !== locomotionRef.current) {
-        locomotionRef.current = nextLocomotion;
-        setLocomotion(nextLocomotion);
-      }
-      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
-      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      // Check vehicle proximity
+      const distToTech = pos.distanceTo(new THREE.Vector3(0, 0, 12));
+      const nearTech = distToTech < 3.8;
+      isNearVehicleRef.current = nearTech;
+      setNearbyVehicle(nearTech);
 
-      const moveDir = new THREE.Vector3();
-      if (keys.current['w'] || keys.current['arrowup']) moveDir.add(forward);
-      if (keys.current['s'] || keys.current['arrowdown']) moveDir.sub(forward);
-      if (keys.current['d'] || keys.current['arrowright']) moveDir.add(right);
-      if (keys.current['a'] || keys.current['arrowleft']) moveDir.sub(right);
+      let moving = false;
+      let isProne = proneRef.current;
 
-      if (moveDir.lengthSq() > 0) {
-        moveDir.normalize().multiplyScalar(moveSpeed * delta);
-        pos.add(moveDir);
-      }
-
-      // Vault/climb impulse uses the same grounded kinematics and stays collision-safe.
-      if (isVaulting) {
-        lastJumpRef.current = Date.now();
-        vel.y = 5.8;
-        keys.current[' '] = false;
-        setLocomotion('vault');
-      }
-      if (isProne) vel.y = 0;
-      else if (keys.current[' '] && pos.y <= 0.05 && !isCrouchedRef.current) vel.y = 5.2;
-      vel.y -= 15.0 * delta;
-      pos.y += vel.y * delta;
-      if (pos.y < 0) {
-        pos.y = 0;
-        vel.y = 0;
-      }
-
-      pos.x = Math.max(-160, Math.min(160, pos.x));
-      pos.z = Math.max(-160, Math.min(160, pos.z));
-
-      // 2. Obstacle Collision Resolution
-      obstacles.forEach(obs => {
-        const playerBox = new THREE.Box3(
-          new THREE.Vector3(pos.x - 0.45, pos.y, pos.z - 0.45),
-          new THREE.Vector3(pos.x + 0.45, pos.y + 1.8, pos.z + 0.45)
-        );
-        if (obs.box.intersectsBox(playerBox)) {
-          const center = new THREE.Vector3();
-          obs.box.getCenter(center);
-          const push = pos.clone().sub(center).setY(0).normalize().multiplyScalar(0.08);
-          pos.add(push);
+      if (isVehicleMountedRef.current) {
+        // Player is mounted on the Armored Technical Autocannon Turret!
+        pos.set(0, 1.85, 12);
+        vel.set(0, 0, 0);
+        if (locomotionRef.current !== 'idle') {
+          locomotionRef.current = 'idle';
+          setLocomotion('idle');
         }
-      });
+      } else {
+        // 1. Tactical locomotion: sprint, crouch, prone/crawl, and vault impulse.
+        moving = Boolean(keys.current['w'] || keys.current['a'] || keys.current['s'] || keys.current['d']);
+        isProne = proneRef.current;
+        const isVaulting = keys.current[' '] && moving && pos.y <= 0.05 && Date.now() - lastJumpRef.current > 500;
+        const moveSpeed = isProne ? 1.25 : isCrouchedRef.current ? 2.8 : sprintRef.current ? 9.2 : 5.8;
+        const nextLocomotion: LocomotionState = isVaulting ? 'vault' : isProne ? (moving ? 'crawl' : 'prone') : isCrouchedRef.current ? 'crouch' : sprintRef.current && moving ? 'sprint' : moving ? 'idle' : 'idle';
+        if (nextLocomotion !== locomotionRef.current) {
+          locomotionRef.current = nextLocomotion;
+          setLocomotion(nextLocomotion);
+        }
+        const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+        const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+
+        const moveDir = new THREE.Vector3();
+        if (keys.current['w'] || keys.current['arrowup']) moveDir.add(forward);
+        if (keys.current['s'] || keys.current['arrowdown']) moveDir.sub(forward);
+        if (keys.current['d'] || keys.current['arrowright']) moveDir.add(right);
+        if (keys.current['a'] || keys.current['arrowleft']) moveDir.sub(right);
+
+        if (moveDir.lengthSq() > 0) {
+          moveDir.normalize().multiplyScalar(moveSpeed * delta);
+          pos.add(moveDir);
+        }
+
+        // Check Watchtower Ladder Climb (Allows scaling to sniper decks!)
+        let onLadder = false;
+        const watchtowers = [[-38, -32], [38, -32], [-38, 32], [38, 32]];
+        for (const [tx, tz] of watchtowers) {
+          if (Math.hypot(pos.x - tx, pos.z - (tz + 2.35)) < 1.45) {
+            onLadder = true;
+            if (keys.current['w'] || keys.current['arrowup'] || keys.current[' ']) {
+              pos.y = Math.min(9.8, pos.y + 5.2 * delta);
+              vel.y = 0;
+              locomotionRef.current = 'climb';
+              setLocomotion('climb');
+            } else if (keys.current['s'] || keys.current['arrowdown']) {
+              pos.y = Math.max(0, pos.y - 4.5 * delta);
+              vel.y = 0;
+            }
+            break;
+          }
+        }
+
+        // Check standing on top of platforms / obstacle roofs
+        let groundLevel = 0;
+        obstacles.forEach(obs => {
+          const topY = obs.box.max.y;
+          const inBoundsXZ = pos.x >= obs.box.min.x - 0.25 && pos.x <= obs.box.max.x + 0.25 &&
+                             pos.z >= obs.box.min.z - 0.25 && pos.z <= obs.box.max.z + 0.25;
+          if (inBoundsXZ && pos.y >= topY - 0.45 && pos.y <= topY + 0.8) {
+            groundLevel = Math.max(groundLevel, topY);
+          }
+        });
+
+        if (!onLadder) {
+          if (isVaulting) {
+            lastJumpRef.current = Date.now();
+            vel.y = 5.8;
+            keys.current[' '] = false;
+            setLocomotion('vault');
+          }
+          if (isProne) vel.y = 0;
+          else if (keys.current[' '] && pos.y <= groundLevel + 0.05 && !isCrouchedRef.current) vel.y = 5.2;
+
+          if (pos.y > groundLevel) {
+            vel.y -= 15.0 * delta;
+            pos.y += vel.y * delta;
+          }
+          if (pos.y <= groundLevel) {
+            pos.y = groundLevel;
+            vel.y = 0;
+          }
+        }
+
+        pos.x = Math.max(-160, Math.min(160, pos.x));
+        pos.z = Math.max(-160, Math.min(160, pos.z));
+
+        // 2. Obstacle Collision Resolution
+        obstacles.forEach(obs => {
+          // If player is standing on top of obstacle, ignore horizontal collision
+          if (pos.y >= obs.box.max.y - 0.18) return;
+
+          const playerBox = new THREE.Box3(
+            new THREE.Vector3(pos.x - 0.45, pos.y, pos.z - 0.45),
+            new THREE.Vector3(pos.x + 0.45, pos.y + 1.8, pos.z + 0.45)
+          );
+          if (obs.box.intersectsBox(playerBox)) {
+            if (obs.box.max.y <= pos.y + 1.4 && isVaulting) {
+              vel.y = 5.6;
+              pos.y += 0.2;
+            } else {
+              const center = new THREE.Vector3();
+              obs.box.getCenter(center);
+              const push = pos.clone().sub(center).setY(0).normalize().multiplyScalar(0.08);
+              pos.add(push);
+            }
+          }
+        });
+      }
 
       // 3. Update Player Soldier Mesh
       playerSoldier.root.position.copy(pos);
@@ -513,6 +585,72 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         }
       });
       setNearbyLoot(foundNearby);
+
+      // 5.5 Active Rockets (RPG-7) Flight Physics & Detonation
+      const rockets = activeRocketsRef.current;
+      for (let i = rockets.length - 1; i >= 0; i--) {
+        const r = rockets[i];
+        const prevPos = r.mesh.position.clone();
+        r.mesh.position.addScaledVector(r.velocity, delta);
+
+        // Rocket exhaust particle puff
+        if (Math.random() < 0.65) {
+          const puff = new THREE.Mesh(
+            new THREE.SphereGeometry(0.18 + Math.random() * 0.12, 6, 6),
+            new THREE.MeshBasicMaterial({ color: '#78716c', transparent: true, opacity: 0.55 })
+          );
+          puff.position.copy(prevPos);
+          scene.add(puff);
+          setTimeout(() => {
+            scene.remove(puff);
+            puff.geometry.dispose();
+          }, 320);
+        }
+
+        const oppTarget = opponentPosRef.current.clone().add(new THREE.Vector3(0, 1.1, 0));
+        const oppDist = r.mesh.position.distanceTo(oppTarget);
+        let hitObs = false;
+        for (const obs of obstacles) {
+          if (obs.box.containsPoint(r.mesh.position)) {
+            hitObs = true;
+            break;
+          }
+        }
+        const hitGround = r.mesh.position.y <= 0.1;
+        const timedOut = Date.now() - r.spawnTime > 3500;
+
+        if (oppDist < 2.2 || hitObs || hitGround || timedOut) {
+          const blastPos = r.mesh.position.clone();
+          scene.remove(r.mesh);
+          rockets.splice(i, 1);
+
+          createExplosionBlast(scene, blastPos);
+          sound.playExplosion();
+          cameraShakeRef.current = 0.55;
+
+          // Splash damage to opponent bot
+          const distToOpp = blastPos.distanceTo(opponentPosRef.current);
+          if (distToOpp < 9.5) {
+            const splashDmg = Math.round(160 * Math.max(0.2, (1 - distToOpp / 9.5)));
+            damageOpponent(splashDmg, distToOpp < 2.4);
+            setDamageFeed(`🚀 RPG DETONATION! -${splashDmg}`);
+          }
+
+          // Splash damage to player if caught in blast
+          const distToSelf = blastPos.distanceTo(pos);
+          if (distToSelf < 7.5) {
+            const selfDmg = Math.round(90 * (1 - distToSelf / 7.5));
+            takeDamage(selfDmg);
+          }
+        }
+      }
+
+      // Camera Screenshake Decay
+      if (cameraShakeRef.current > 0.01) {
+        camera.position.x += (Math.random() - 0.5) * cameraShakeRef.current;
+        camera.position.y += (Math.random() - 0.5) * cameraShakeRef.current;
+        cameraShakeRef.current *= 0.88;
+      }
 
       // 6. Safe Zone Shrink & Outside Damage
       if (safeZone.radius > safeZone.targetRadius) {
@@ -679,7 +817,19 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     tgHaptics.notification('success');
 
     if (nearbyLoot.type === 'weapon' && nearbyLoot.weaponType) {
-      const newGun: WeaponSlotState = nearbyLoot.weaponType === 'awm' ? {
+      const newGun: WeaponSlotState = nearbyLoot.weaponType === 'rpg' ? {
+        id: 'secondary',
+        name: 'RPG-7 Bazooka',
+        nameAr: 'قاذف صواريخ RPG-7 (بازوكا)',
+        weaponType: 'rpg',
+        damage: 160,
+        fireRateMs: 1400,
+        magazineSize: 1,
+        reloadTimeMs: 2700,
+        ammoInClip: 1,
+        reserveAmmo: 6,
+        icon: '🚀'
+      } : nearbyLoot.weaponType === 'awm' ? {
         id: 'secondary',
         name: 'AWM Sniper',
         nameAr: 'قناصة AWM الأسطورية',
@@ -726,13 +876,178 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     setNearbyLoot(null);
   };
 
-  // Shoot Action (3D Raycasting Hitbox Detection)
+  // Combat Vehicle Mount / Dismount Action
+  const toggleVehicleMount = () => {
+    if (isVehicleMountedRef.current) {
+      // Dismount
+      isVehicleMountedRef.current = false;
+      setIsVehicleMounted(false);
+      playerPosRef.current.set(2.4, 0, 12);
+      sound.playShield();
+      tgHaptics.notification('warning');
+      setDamageFeed('تم النزول من المدرعة 🚶‍♂️');
+      setTimeout(() => setDamageFeed(null), 1200);
+    } else {
+      // Mount heavy turret
+      isVehicleMountedRef.current = true;
+      setIsVehicleMounted(true);
+      playerPosRef.current.set(0, 1.85, 12);
+      sound.playShield();
+      tgHaptics.notification('success');
+      setDamageFeed('تم ركوب مدفع المدرعة الثقيل 🛡️🔥');
+      setTimeout(() => setDamageFeed(null), 1200);
+    }
+  };
+
+  // Explosive Blast Visual Effects (Fireball + Shrapnel Sparks + Flash Light)
+  const createExplosionBlast = (scene: THREE.Scene, pos: THREE.Vector3) => {
+    const fireGeo = new THREE.SphereGeometry(1.6, 12, 12);
+    const fireMat = new THREE.MeshBasicMaterial({ color: '#ff4500', transparent: true, opacity: 0.95 });
+    const fireball = new THREE.Mesh(fireGeo, fireMat);
+    fireball.position.copy(pos);
+    scene.add(fireball);
+
+    const blastLight = new THREE.PointLight('#f97316', 15, 24);
+    blastLight.position.copy(pos);
+    scene.add(blastLight);
+
+    const sparks: THREE.Mesh[] = [];
+    for (let i = 0; i < 14; i++) {
+      const sp = new THREE.Mesh(
+        new THREE.SphereGeometry(0.09, 4, 4),
+        new THREE.MeshBasicMaterial({ color: i % 2 === 0 ? '#fbbf24' : '#ef4444' })
+      );
+      sp.position.copy(pos);
+      sp.userData = {
+        vx: (Math.random() - 0.5) * 16,
+        vy: Math.random() * 12 + 2,
+        vz: (Math.random() - 0.5) * 16
+      };
+      scene.add(sp);
+      sparks.push(sp);
+    }
+
+    const start = Date.now();
+    const dur = 420;
+    const anim = () => {
+      const elapsed = Date.now() - start;
+      const prog = elapsed / dur;
+      if (prog < 1) {
+        const scale = 1 + prog * 3.6;
+        fireball.scale.set(scale, scale, scale);
+        fireMat.opacity = 0.95 * (1 - prog);
+        blastLight.intensity = 15 * (1 - prog);
+        sparks.forEach(sp => {
+          sp.position.x += sp.userData.vx * 0.016;
+          sp.position.y += sp.userData.vy * 0.016;
+          sp.position.z += sp.userData.vz * 0.016;
+          sp.userData.vy -= 18 * 0.016;
+        });
+        requestAnimationFrame(anim);
+      } else {
+        scene.remove(fireball);
+        scene.remove(blastLight);
+        fireGeo.dispose();
+        fireMat.dispose();
+        sparks.forEach(sp => {
+          scene.remove(sp);
+          sp.geometry.dispose();
+        });
+      }
+    };
+    anim();
+  };
+
+  // Bullet Impact Sparks & Blood Splatter
+  const createImpactSparks = (scene: THREE.Scene, pos: THREE.Vector3, isFlesh: boolean) => {
+    const count = isFlesh ? 8 : 5;
+    const color = isFlesh ? '#dc2626' : '#f59e0b';
+    const sparks: THREE.Mesh[] = [];
+    for (let i = 0; i < count; i++) {
+      const s = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 4, 4),
+        new THREE.MeshBasicMaterial({ color })
+      );
+      s.position.copy(pos);
+      s.userData = {
+        vx: (Math.random() - 0.5) * 7,
+        vy: Math.random() * 5 + 1.5,
+        vz: (Math.random() - 0.5) * 7
+      };
+      scene.add(s);
+      sparks.push(s);
+    }
+    const startTime = Date.now();
+    const animSparks = () => {
+      const elapsed = (Date.now() - startTime) / 1000;
+      if (elapsed < 0.28) {
+        sparks.forEach(s => {
+          s.position.x += s.userData.vx * 0.016;
+          s.position.y += s.userData.vy * 0.016;
+          s.position.z += s.userData.vz * 0.016;
+          s.userData.vy -= 12 * 0.016;
+        });
+        requestAnimationFrame(animSparks);
+      } else {
+        sparks.forEach(s => {
+          scene.remove(s);
+          s.geometry.dispose();
+        });
+      }
+    };
+    animSparks();
+  };
+
+  // Shoot Action (3D Raycasting & Physical RPG Rockets & Vehicle Autocannon)
   const triggerShoot = (
     camera: THREE.Camera, 
     scene: THREE.Scene, 
     obstacles: CoverObstacle3D[],
     oppSoldier: ReturnType<typeof createSoldierMesh>
   ) => {
+    // 1. VEHICLE MOUNTED DUAL AUTOCANNON FIRE
+    if (isVehicleMountedRef.current) {
+      const now = Date.now();
+      if (now - lastFireTimeRef.current < 120) return;
+      lastFireTimeRef.current = now;
+
+      sound.playGunshot('autocannon');
+      tgHaptics.impact('heavy');
+      cameraShakeRef.current = 0.22;
+
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+
+      const targets = [oppSoldier.head, oppSoldier.torso, ...obstacles.map(o => o.mesh)];
+      const intersects = raycaster.intersectObjects(targets, true);
+      const hitPoint = intersects[0]?.point ?? raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(150));
+
+      const tracerGeometry = new THREE.BufferGeometry().setFromPoints([raycaster.ray.origin.clone(), hitPoint]);
+      const tracerMaterial = new THREE.LineBasicMaterial({ color: '#f59e0b', transparent: true, opacity: 0.95 });
+      const tracer = new THREE.Line(tracerGeometry, tracerMaterial);
+      scene.add(tracer);
+      setTimeout(() => {
+        scene.remove(tracer);
+        tracerGeometry.dispose();
+        tracerMaterial.dispose();
+      }, 70);
+
+      const muzzle = new THREE.PointLight('#f59e0b', 7, 5);
+      muzzle.position.copy(raycaster.ray.origin);
+      scene.add(muzzle);
+      setTimeout(() => scene.remove(muzzle), 50);
+
+      if (intersects.length > 0) {
+        const hit = intersects[0];
+        createImpactSparks(scene, hit.point, hit.object === oppSoldier.head || hit.object === oppSoldier.torso);
+
+        if (hit.object === oppSoldier.head || hit.object === oppSoldier.torso || oppSoldier.root.getObjectById(hit.object.id)) {
+          damageOpponent(42, hit.object === oppSoldier.head);
+        }
+      }
+      return;
+    }
+
     const curWeapon = weapons[activeSlot];
     if (!curWeapon || isReloading || curWeapon.ammoInClip <= 0) {
       if (curWeapon && curWeapon.ammoInClip <= 0) reloadActiveWeapon();
@@ -749,10 +1064,57 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       [activeSlot]: { ...curWeapon, ammoInClip: curWeapon.ammoInClip - 1 }
     }));
 
+    // 2. BAZOOKA / RPG-7 PHYSICAL ROCKET LAUNCH
+    if (curWeapon.weaponType === 'rpg') {
+      sound.playGunshot('rpg');
+      tgHaptics.notification('warning');
+      cameraShakeRef.current = 0.45;
+
+      const rocketGroup = new THREE.Group();
+      // Warhead
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(0.18, 0.45, 8),
+        new THREE.MeshStandardMaterial({ color: '#ea580c', roughness: 0.4, metalness: 0.6 })
+      );
+      cone.rotation.x = Math.PI / 2;
+      cone.position.z = -0.35;
+      rocketGroup.add(cone);
+
+      // Rocket Body
+      const cylinder = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09, 0.09, 0.8, 8),
+        new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.5, metalness: 0.8 })
+      );
+      cylinder.rotation.x = Math.PI / 2;
+      rocketGroup.add(cylinder);
+
+      // Thruster Flame Light
+      const rLight = new THREE.PointLight('#f97316', 8, 10);
+      rLight.position.z = 0.45;
+      rocketGroup.add(rLight);
+
+      const camDir = new THREE.Vector3();
+      camera.getWorldDirection(camDir);
+      rocketGroup.position.copy(camera.position).add(camDir.clone().multiplyScalar(1.2));
+      rocketGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), camDir);
+
+      scene.add(rocketGroup);
+      activeRocketsRef.current.push({
+        mesh: rocketGroup,
+        light: rLight,
+        velocity: camDir.clone().multiplyScalar(52), // 52 m/s
+        spawnTime: Date.now()
+      });
+
+      multiplayer.sendShootBullets([{ weaponType: 'rpg' }]);
+      return;
+    }
+
+    // 3. STANDARD HITSCAN FIREARMS (AK-47, AWM, Shotgun, Pistol)
     sound.playGunshot(curWeapon.weaponType);
     tgHaptics.impact(curWeapon.weaponType === 'awm' ? 'heavy' : 'medium');
+    cameraShakeRef.current = curWeapon.weaponType === 'awm' ? 0.35 : 0.12;
 
-    // 3D Raycasting from crosshair center
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
 
@@ -760,7 +1122,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     const intersects = raycaster.intersectObjects(targets, true);
     const hitPoint = intersects[0]?.point ?? raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(120));
     const tracerGeometry = new THREE.BufferGeometry().setFromPoints([raycaster.ray.origin.clone(), hitPoint]);
-    const tracerMaterial = new THREE.LineBasicMaterial({ color: curWeapon.weaponType === 'awm' ? '#fbbf24' : '#67e8f9', transparent: true, opacity: 0.9 });
+    const tracerMaterial = new THREE.LineBasicMaterial({
+      color: curWeapon.weaponType === 'awm' ? '#fbbf24' : curWeapon.weaponType === 'shotgun' ? '#f87171' : '#67e8f9',
+      transparent: true,
+      opacity: 0.95
+    });
     const tracer = new THREE.Line(tracerGeometry, tracerMaterial);
     scene.add(tracer);
     window.setTimeout(() => {
@@ -776,14 +1142,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
     if (intersects.length > 0) {
       const hit = intersects[0];
-
-      // Impact light
       const spark = new THREE.PointLight('#f59e0b', 3, 2);
       spark.position.copy(hit.point);
       scene.add(spark);
       setTimeout(() => scene.remove(spark), 120);
 
-      // Check hit target
+      createImpactSparks(scene, hit.point, hit.object === oppSoldier.head || hit.object === oppSoldier.torso);
+
       if (hit.object === oppSoldier.head) {
         sound.playExplosion();
         damageOpponent(curWeapon.damage * 2.2, true);
@@ -815,8 +1180,17 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   };
 
   const takeDamage = (dmg: number) => {
-    sound.playHurt();
+    // If inside armored combat vehicle, reduce damage by 75%
+    if (isVehicleMountedRef.current) {
+      dmg = Math.round(dmg * 0.25);
+      sound.playShield();
+    } else {
+      sound.playHurt();
+    }
+
     tgHaptics.impact('heavy');
+    cameraShakeRef.current = 0.35;
+
     setHp(prev => {
       let curArmor = armor;
       let newHp = prev;
@@ -1041,6 +1415,34 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
       <AnimatePresence>
         {nearbyLoot && <motion.button initial={{ opacity: 0, y: 25 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 25 }} onClick={pickupNearbyLoot} className="pointer-events-auto absolute bottom-52 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-2xl border border-amber-300/40 bg-[#080b11]/85 px-4 py-3 text-right shadow-[0_0_32px_rgba(255,215,0,.15)] backdrop-blur-xl"><span className="grid h-10 w-10 place-items-center rounded-xl bg-amber-300/15 text-xl">{nearbyLoot.icon}</span><span><span className="block text-[9px] font-bold tracking-[.2em] text-amber-300">GROUND LOOT / PRESS F</span><span className="block text-sm font-black text-white">{nearbyLoot.nameAr}</span></span><span className="rounded-lg bg-amber-300 px-2 py-1 text-[10px] font-black text-slate-950">التقاط</span></motion.button>}
+        {(nearbyVehicle || isVehicleMounted) && (
+          <motion.button
+            initial={{ opacity: 0, y: 25 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 25 }}
+            onClick={toggleVehicleMount}
+            className={`pointer-events-auto absolute bottom-40 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-2xl border px-4 py-2.5 text-right shadow-[0_0_32px_rgba(34,211,238,.2)] backdrop-blur-xl ${
+              isVehicleMounted
+                ? 'border-red-400/80 bg-red-950/90 text-red-200'
+                : 'border-cyan-400/80 bg-slate-900/90 text-cyan-200'
+            }`}
+          >
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-cyan-400/20 text-xl">
+              {isVehicleMounted ? '🚶‍♂️' : '🛡️'}
+            </span>
+            <span>
+              <span className="block text-[9px] font-bold tracking-widest text-amber-300">
+                {isVehicleMounted ? 'MOUNTED AUTOCANNON' : 'ARMORED COMBAT VEHICLE'}
+              </span>
+              <span className="block text-xs font-black text-white">
+                {isVehicleMounted ? 'النزول من المدرعة [F]' : 'ركوب المدفع الرشاش الثقيل [F]'}
+              </span>
+            </span>
+            <span className="rounded-lg bg-cyan-400 px-2.5 py-1 text-[10px] font-black text-slate-950">
+              {isVehicleMounted ? 'نزول' : 'ركوب'}
+            </span>
+          </motion.button>
+        )}
       </AnimatePresence>
 
       {/* Bottom HUD: Health, Armor, 3-Slot Weapons, & Touch Controls */}
@@ -1161,18 +1563,43 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
             </button>
           </div>
 
-          {/* Action Buttons: Crouch, Scope, Reload, Fire */}
-          <div className="flex items-center gap-1.5">
+          {/* Action Buttons: Jump, Prone, Crouch, Scope, Reload, Fire */}
+          <div className="flex items-center gap-1">
+            {/* Jump / Vault Button */}
+            <button
+              onClick={() => {
+                keys.current[' '] = true;
+                setTimeout(() => (keys.current[' '] = false), 160);
+              }}
+              className="p-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl border border-slate-700 text-xs font-bold active:bg-cyan-600 transition-all"
+              title="قفز / تسلق [Space]"
+            >
+              🦘
+            </button>
+
+            {/* Prone Button */}
+            <button
+              onClick={toggleProne}
+              className={`p-2 rounded-xl border text-xs font-bold transition-all ${
+                locomotion === 'prone' || locomotion === 'crawl'
+                  ? 'bg-amber-600 text-white border-amber-400 shadow-md'
+                  : 'bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+              title="زحف تكتيكي [Z]"
+            >
+              🧎‍♂️
+            </button>
+
             <button
               onClick={toggleCrouch}
-              className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
+              className={`p-2 rounded-xl border text-xs font-bold transition-all ${
                 isCrouching
                   ? 'bg-cyan-600 text-white border-cyan-400 shadow-md'
                   : 'bg-slate-800 text-slate-300 border-slate-700'
               }`}
-              title="انحناء للاحتماء خلف السيارة"
+              title="انحناء للاحتماء خلف السواتر [C]"
             >
-              <Shield className="w-4 h-4" />
+              <Shield className="w-3.5 h-3.5" />
             </button>
 
             <button
