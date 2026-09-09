@@ -15,8 +15,8 @@ import { ReferralHub } from './components/ReferralHub';
 import { Inventory } from './components/Inventory';
 import { PvPLobby } from './components/PvPLobby';
 import { CyberTacticsArena } from './components/CyberTacticsArena';
-import { PubgArena } from './components/PubgArena';
 import { Pubg3DArena } from './components/Pubg3DArena';
+import { CyberWarzoneArena } from './components/CyberWarzoneArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
 import { MapId } from './game3d/types3d';
 import { sound } from './audio/soundEngine';
@@ -233,10 +233,10 @@ export const App: React.FC = () => {
 
       {/* Main View Area */}
       <main className={activeMatch ? "flex-1 w-full h-full p-0 overflow-hidden" : "p-4 flex-1 pb-24"}>
-        {/* TAB 1: CYBER WAR (ONLINE PVP 3D) */}
+        {/* TAB 1: CYBER WAR (ONLINE PVP 1v1 TACTICAL ARENA) */}
         {tab === 'cyberwar' && (
           activeMatch ? (
-            <Pubg3DArena 
+            <CyberWarzoneArena 
               user={user}
               roomCode={activeMatch.roomCode}
               mode={activeMatch.mode}
