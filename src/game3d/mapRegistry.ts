@@ -21,6 +21,16 @@ export const MAP_CATALOG: Record<MapId, MapMetadata> = {
     fogColor: '#78350f',
     descriptionAr: 'أجواء صحراوية حارقة مع سواتر ترابية وصخور ضخمة وقناصات AWM مبعثرة للقنص البعيد.',
     icon: '🏜️'
+  },
+  warzone: {
+    id: 'warzone',
+    nameAr: 'منطقة الحرب الكبرى (Tactical Warzone)',
+    subtitleAr: 'ساحة 200×200 متر مع دبابات، خنادق، وأبراج قناصة',
+    previewColor: 'from-zinc-950 via-cyan-950 to-amber-950',
+    skyColor: '#17212b',
+    fogColor: '#27323b',
+    descriptionAr: 'ميدان عمليات واسع مليء بالسواتر القابلة للتدمير، المركبات الثقيلة، ومناطق الاشتباك المفتوحة.',
+    icon: '◈'
   }
 };
 
@@ -165,6 +175,48 @@ export function buildMapEnvironment(
       rockMesh.castShadow = true;
       scene.add(rockMesh);
       obstacles.push({ mesh: rockMesh, box: new THREE.Box3().setFromObject(rockMesh), type: 'rock' });
+    });
+  }
+
+  if (mapId === 'warzone') {
+    const battlefieldMat = new THREE.MeshStandardMaterial({ color: '#3f4644', roughness: 0.92, metalness: 0.08 });
+    const roadMat = new THREE.MeshStandardMaterial({ color: '#202728', roughness: 0.96 });
+    const road = new THREE.Mesh(new THREE.BoxGeometry(12, 0.08, 190), roadMat);
+    road.position.set(0, 0.04, 0);
+    road.receiveShadow = true;
+    scene.add(road);
+
+    [-54, -28, 28, 54].forEach((x) => {
+      const ridge = new THREE.Mesh(new THREE.BoxGeometry(8, 1.8, 150), battlefieldMat);
+      ridge.position.set(x, 0.9, 0);
+      ridge.castShadow = true;
+      ridge.receiveShadow = true;
+      scene.add(ridge);
+      obstacles.push({ mesh: ridge, box: new THREE.Box3().setFromObject(ridge), type: 'building' });
+    });
+
+    [-70, -35, 35, 70].forEach((z) => {
+      const trench = new THREE.Mesh(new THREE.BoxGeometry(150, 0.7, 2.4), new THREE.MeshStandardMaterial({ color: '#242b28', roughness: 1 }));
+      trench.position.set(0, -0.2, z);
+      scene.add(trench);
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(150, 0.9, 0.45), battlefieldMat);
+      wall.position.set(0, 0.45, z + 1.5);
+      wall.castShadow = true;
+      scene.add(wall);
+      obstacles.push({ mesh: wall, box: new THREE.Box3().setFromObject(wall), type: 'building' });
+    });
+
+    [[-38, -32], [38, -32], [-38, 32], [38, 32]].forEach(([x, z]) => {
+      const tower = new THREE.Group();
+      const legs = new THREE.Mesh(new THREE.BoxGeometry(4, 6, 4), new THREE.MeshStandardMaterial({ color: '#56605d', roughness: 0.8, metalness: 0.35 }));
+      legs.position.y = 3;
+      tower.add(legs);
+      const platform = new THREE.Mesh(new THREE.BoxGeometry(6, 0.4, 6), new THREE.MeshStandardMaterial({ color: '#202728', metalness: 0.55, roughness: 0.55 }));
+      platform.position.y = 6.2;
+      tower.add(platform);
+      tower.position.set(x, 0, z);
+      scene.add(tower);
+      obstacles.push({ mesh: tower, box: new THREE.Box3().setFromObject(tower), type: 'building' });
     });
   }
 

@@ -11,7 +11,7 @@ import { buildMapEnvironment, MAP_CATALOG } from '../game3d/mapRegistry';
 import { createSoldierMesh } from '../game3d/worldBuilder';
 import { 
   CoverObstacle3D, SafeZone3D, CameraViewMode, 
-  MapId, WeaponSlotId, WeaponSlotState, LootItem3D 
+  MapId, WeaponSlotId, WeaponSlotState, LootItem3D, LocomotionState
 } from '../game3d/types3d';
 import { multiplayer, ConnectionStatus } from '../services/multiplayer';
 import { sound } from '../audio/soundEngine';
@@ -57,6 +57,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const [outsideZone, setOutsideZone] = useState<boolean>(false);
   const [compassHeading, setCompassHeading] = useState<number>(0);
   const [medkits, setMedkits] = useState<number>(2);
+  const [locomotion, setLocomotion] = useState<LocomotionState>('idle');
+  const [vehiclePrompt, setVehiclePrompt] = useState<'tank' | 'buggy' | null>(null);
+  const locomotionRef = useRef<LocomotionState>('idle');
+  const sprintRef = useRef(false);
+  const proneRef = useRef(false);
+  const lastJumpRef = useRef(0);
 
   // 3-Slot Weapon Inventory System
   const [activeSlot, setActiveSlot] = useState<WeaponSlotId>('primary');
@@ -236,6 +242,10 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         toggleViewMode();
       } else if (e.key.toLowerCase() === 'c') {
         toggleCrouch();
+      } else if (e.key.toLowerCase() === 'z') {
+        toggleProne();
+      } else if (e.key.toLowerCase() === 'shift') {
+        sprintRef.current = true;
       } else if (e.key.toLowerCase() === 'r') {
         reloadActiveWeapon();
       } else if (e.key.toLowerCase() === 'e') {
@@ -252,6 +262,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     };
     const onKeyUp = (e: KeyboardEvent) => {
       keys.current[e.key.toLowerCase()] = false;
+      if (e.key.toLowerCase() === 'shift') sprintRef.current = false;
     };
 
     // Pointer Lock Mouse Controls (PC)
@@ -321,8 +332,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const { yaw, pitch } = playerAnglesRef.current;
       const curViewMode = viewModeRef.current;
 
-      // 1. Move Player relative to Camera Yaw
-      const moveSpeed = isCrouchedRef.current ? 2.8 : 5.8;
+      // 1. Tactical locomotion: sprint, crouch, prone/crawl, and vault impulse.
+      const moving = Boolean(keys.current['w'] || keys.current['a'] || keys.current['s'] || keys.current['d']);
+      const isProne = proneRef.current;
+      const isVaulting = keys.current[' '] && moving && pos.y <= 0.05 && Date.now() - lastJumpRef.current > 500;
+      const moveSpeed = isProne ? 1.25 : isCrouchedRef.current ? 2.8 : sprintRef.current ? 9.2 : 5.8;
+      const nextLocomotion: LocomotionState = isVaulting ? 'vault' : isProne ? (moving ? 'crawl' : 'prone') : isCrouchedRef.current ? 'crouch' : sprintRef.current && moving ? 'sprint' : moving ? 'idle' : 'idle';
+      if (nextLocomotion !== locomotionRef.current) {
+        locomotionRef.current = nextLocomotion;
+        setLocomotion(nextLocomotion);
+      }
       const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
 
@@ -337,10 +356,15 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         pos.add(moveDir);
       }
 
-      // Jump Physics
-      if (keys.current[' '] && pos.y <= 0.05 && !isCrouchedRef.current) {
-        vel.y = 5.2;
+      // Vault/climb impulse uses the same grounded kinematics and stays collision-safe.
+      if (isVaulting) {
+        lastJumpRef.current = Date.now();
+        vel.y = 5.8;
+        keys.current[' '] = false;
+        setLocomotion('vault');
       }
+      if (isProne) vel.y = 0;
+      else if (keys.current[' '] && pos.y <= 0.05 && !isCrouchedRef.current) vel.y = 5.2;
       vel.y -= 15.0 * delta;
       pos.y += vel.y * delta;
       if (pos.y < 0) {
@@ -680,8 +704,21 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   };
 
   const toggleCrouch = () => {
+    if (proneRef.current) proneRef.current = false;
     isCrouchedRef.current = !isCrouchedRef.current;
     setIsCrouching(isCrouchedRef.current);
+    locomotionRef.current = isCrouchedRef.current ? 'crouch' : 'idle';
+    setLocomotion(locomotionRef.current);
+    sound.playPickup();
+  };
+
+  const toggleProne = () => {
+    proneRef.current = !proneRef.current;
+    isCrouchedRef.current = false;
+    setIsCrouching(false);
+    locomotionRef.current = proneRef.current ? 'prone' : 'idle';
+    setLocomotion(locomotionRef.current);
+    tgHaptics.impact('medium');
     sound.playPickup();
   };
 
@@ -755,6 +792,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   };
 
   const activeWeapon = weapons[activeSlot];
+  const locomotionLabel: Record<LocomotionState, string> = { idle: 'READY', sprint: 'SPRINT', crouch: 'CROUCH', slide: 'SLIDE', prone: 'PRONE', crawl: 'CRAWL', vault: 'VAULT', climb: 'CLIMB' };
 
   return (
     <div className="fixed inset-0 z-50 w-full h-full max-w-lg mx-auto bg-slate-950 overflow-hidden border-x border-slate-800 shadow-2xl flex flex-col select-none touch-none">
@@ -763,6 +801,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         ref={mountRef} 
         className="w-full h-full relative cursor-crosshair overflow-hidden"
       >
+        <div className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-3 rounded-full border border-cyan-300/20 bg-slate-950/75 px-3 py-1.5 font-mono text-[9px] tracking-[0.18em] text-cyan-200 shadow-[0_0_24px_rgba(34,211,238,.14)] backdrop-blur-md">
+          <span className="text-amber-300">{mapId === 'warzone' ? 'WARZONE 200×200' : 'TACTICAL ARENA'}</span>
+          <span className="h-1 w-1 rounded-full bg-cyan-300" />
+          <span>{locomotionLabel[locomotion]}</span>
+          <span className="text-slate-500">FPP/TPP ONLINE</span>
+        </div>
         {/* PC Pointer Lock Banner */}
         {!isLocked && (
           <div className="absolute top-16 inset-x-0 mx-auto w-max bg-black/80 backdrop-blur-md px-4 py-1.5 rounded-full border border-slate-700/60 text-white text-xs font-bold pointer-events-none z-30 animate-pulse">
