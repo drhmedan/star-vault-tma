@@ -167,6 +167,7 @@ interface BotState {
   patrolTarget: THREE.Vector3; pauseT: number;
   ammo: number; reloadingUntil: number;
   accuracy: number;
+  weapon: WeaponType;
 }
 
 interface Proj {
@@ -255,7 +256,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     lastGrenade: 0, dodgeDir: 1,
     patrolTarget: new THREE.Vector3(), pauseT: 0,
     ammo: 30, reloadingUntil: 0,
-    accuracy: 0.5
+    accuracy: 0.5,
+    weapon: 'ak47'
   });
 
   const keysRef = useRef<Set<string>>(new Set());
@@ -743,6 +745,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         viewmodel.group.visible = viewModeRef.current === 'fpp';
         camera.add(viewmodel.group);
       }
+      // Third-person soldier mirrors the equipped weapon.
+      playerSoldier.setWeapon(w.def.type);
     }
 
     function pickup(loot: LootItem3D) {
@@ -799,7 +803,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           const camDir = new THREE.Vector3();
           camera.getWorldDirection(camDir);
           const pan = toBot.clone().cross(camDir).y * 2;
-          sound.playSpatialShot(msg.payload?.bullets?.[0]?.weaponType || 'ak47', dist, pan);
+          const rw = (msg.payload?.bullets?.[0]?.weaponType || 'ak47') as WeaponType;
+          if (bRef.current.weapon !== rw) {
+            bRef.current.weapon = rw;
+            botSoldier.setWeapon(rw);
+          }
+          sound.playSpatialShot(rw, dist, pan);
           botSoldier.setMuzzleFlash(true);
           window.setTimeout(() => botSoldier.setMuzzleFlash(false), 60);
           const from = botSoldier.muzzle.getWorldPosition(new THREE.Vector3());
@@ -919,6 +928,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const accBase = longRange ? 0.15 : dist < 15 ? 0.7 : 0.4;
       const fireInterval = longRange ? 900 : dist < 12 ? 150 : 260;
 
+      // Bot carries a long gun at range, a rifle up close.
+      const botWep: WeaponType = longRange ? 'awm' : 'ak47';
+      if (b.weapon !== botWep) {
+        b.weapon = botWep;
+        botSoldier.setWeapon(botWep);
+      }
+
       if (b.spotted && dist < 110 && now - b.lastFire > fireInterval) {
         b.lastFire = now;
         b.burstCount += 1;
@@ -935,7 +951,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         const camDir = new THREE.Vector3();
         camera.getWorldDirection(camDir);
         const pan = toBot.clone().cross(camDir).y * 2;
-        sound.playSpatialShot('ak47', dist2, pan);
+        sound.playSpatialShot(botWep, dist2, pan);
 
         const spreadRad = (1 - accBase) * 0.09 + (p.crouched ? 0.02 : 0) + (p.prone ? 0.03 : 0);
         const from = botSoldier.muzzle.getWorldPosition(new THREE.Vector3());
@@ -1524,7 +1540,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         botSoldier.head.position.y = 1.62;
         botSoldier.torso.rotation.x = 0;
       } else {
-        botSoldier.root.rotation.x = THREE.MathUtils.lerp(botSoldier.root.rotation.x, -1.45, dt * 6);
+        // Death ragdoll: fall flat on the back with a natural sideways tilt.
+        botSoldier.root.rotation.x = THREE.MathUtils.lerp(botSoldier.root.rotation.x, -Math.PI / 2, dt * 5);
+        botSoldier.root.rotation.z = THREE.MathUtils.lerp(botSoldier.root.rotation.z, 0.18, dt * 3);
         botSoldier.root.position.y = getHeightAt(botSoldier.root.position.x, botSoldier.root.position.z);
       }
 
@@ -1553,13 +1571,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           const adsPos = new THREE.Vector3(0, -0.012, -0.42);
           const vmPos = basePos.clone().lerp(adsPos, adsBlend2);
           vmPos.x += p.lean * -0.12 + bobX;
-          vmPos.y += bobY + p.recoilPitch * 0.25;
+          vmPos.y += bobY + p.recoilPitch * 0.25 + Math.sin(now * 0.0016) * 0.004 * (1 - adsBlend2 * 0.7);
           vmPos.z += p.recoilPitch * 0.5;
           vm.position.lerp(vmPos, dt * 16);
           vm.rotation.x = THREE.MathUtils.lerp(vm.rotation.x, p.pitch * 0.5 - p.recoilPitch * 3, dt * 16);
           vm.rotation.z = THREE.MathUtils.lerp(vm.rotation.z, p.lean * -0.06 + stride * 0.01, dt * 10);
           viewmodel.muzzleLight.intensity = muzzleT > 0 ? 5 : 0;
-          (viewmodel.muzzle.children[0] as THREE.Mesh).visible = muzzleT > 0;
+          (viewmodel.muzzle.children[0] as THREE.Object3D).visible = muzzleT > 0;
         }
         camera.position.set(p.pos.x + p.lean * 0.28, p.pos.y + eyeH + bobY, p.pos.z);
         camera.rotation.set(p.pitch, p.yaw, p.lean * 0.12);

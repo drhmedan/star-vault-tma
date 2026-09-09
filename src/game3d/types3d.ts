@@ -160,6 +160,9 @@ export interface SoldierMesh {
   setSkin: (isEnemy: boolean) => void;
   flashHit: (zone: 'head' | 'body' | 'limb') => void;
   setMuzzleFlash: (on: boolean) => void;
+  // Swaps the held weapon mesh to match the equipped gun (keeps the same
+  // material instances, so draw calls stay constant).
+  setWeapon: (type: WeaponType) => void;
 }
 
 // ============================================================

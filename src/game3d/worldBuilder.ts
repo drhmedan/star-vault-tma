@@ -327,84 +327,73 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
 
   const gun = new THREE.Group();
   recoil.add(gun);
-  const gunMetal = mk(0x0c1117, 0.35, 0.8);
-  const gunPoly = mk(0x1a1f26, 0.55, 0.35);
-  const wood = mk(0x6b4a2b, 0.6, 0.15);
+  // Weapon parts live in a sub-group so `setWeapon` can swap them without
+  // touching the muzzle anchor / light / flash below.
+  const gunParts = new THREE.Group();
+  gun.add(gunParts);
 
-  // Receiver
-  const receiver = box(0.09, 0.12, 0.4, gunMetal);
-  receiver.position.set(0, 0.02, -0.05);
-  add(receiver, gun, 'body', false);
-  // Handguard
-  const handguard = box(0.08, 0.09, 0.3, wood);
-  handguard.position.set(0, 0.0, -0.36);
-  add(handguard, gun, 'body', false);
-  // Barrel
-  const barrel = cyl(0.022, 0.022, 0.4, 10, gunMetal);
-  barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 0.02, -0.62);
-  add(barrel, gun, 'body', false);
-  // Muzzle brake
-  const brake = cyl(0.03, 0.026, 0.09, 10, gunMetal);
-  brake.rotation.x = Math.PI / 2;
-  brake.position.set(0, 0.02, -0.82);
-  add(brake, gun, 'body', false);
-  // Curved magazine
-  const mag = new THREE.Group();
-  mag.position.set(0, -0.12, -0.05);
-  const magBody = box(0.06, 0.2, 0.11, gunPoly);
-  magBody.position.set(0, -0.02, 0);
-  magBody.rotation.x = 0.18;
-  add(magBody, mag, 'body', false);
-  gun.add(mag);
-  // Stock
-  const stock = box(0.07, 0.1, 0.26, gunPoly);
-  stock.position.set(0, 0.02, 0.28);
-  add(stock, gun, 'body', false);
-  // Pistol grip
-  const grip = box(0.05, 0.11, 0.06, gunPoly);
-  grip.position.set(0, -0.08, 0.12);
-  grip.rotation.x = 0.25;
-  add(grip, gun, 'body', false);
-  // Vertical foregrip
-  const foregrip = box(0.04, 0.09, 0.05, gunPoly);
-  foregrip.position.set(0, -0.06, -0.4);
-  foregrip.rotation.x = 0.15;
-  add(foregrip, gun, 'body', false);
-  // Red-dot optic on rail
-  const opticBody = box(0.05, 0.05, 0.1, gunMetal);
-  opticBody.position.set(0, 0.1, -0.08);
-  add(opticBody, gun, 'body', false);
-  const opticGlass = cyl(0.022, 0.022, 0.02, 10, glass);
-  opticGlass.rotation.z = Math.PI / 2;
-  opticGlass.position.set(0, 0.1, -0.12);
-  add(opticGlass, gun, 'body', false);
-  // Accent stripe on receiver
-  const stripe = box(0.092, 0.015, 0.1, accentMat);
-  stripe.position.set(0, 0.085, -0.05);
-  add(stripe, gun, 'body', false);
+  // Weapon materials — one shared set across every swap so the merged gun
+  // stays a constant handful of draw calls.
+  const gunMats: GunMats = {
+    metal: mk(0x11161c, 0.35, 0.85),
+    poly: mk(0x1a1f26, 0.55, 0.35),
+    wood: mk(0x6b4a2b, 0.6, 0.15),
+    glass: mk(0x0b0f14, 0.12, 0.85),
+    accent: mk(0x3a4046, 0.5, 0.6),
+    tube: mk(0x4a5a3a, 0.5, 0.4),
+    head: mk(0x9a3412, 0.4, 0.5)
+  };
 
-  // Muzzle anchor + flash light
+  // Muzzle anchor + flash light (children of the gun so they track the weapon).
   const muzzle = new THREE.Object3D();
-  muzzle.position.set(0.3, 1.36, -0.5);
-  root.add(muzzle);
+  muzzle.position.set(0, 0.02, -0.84);
+  gun.add(muzzle);
   const muzzleLight = new THREE.PointLight(0xffd27a, 0, 9, 1.8);
-  muzzleLight.position.copy(muzzle.position);
-  root.add(muzzleLight);
+  muzzleLight.position.set(0, 0, 0);
+  muzzle.add(muzzleLight);
 
-  // Muzzle flash mesh (hidden until firing)
-  const flashMesh = new THREE.Mesh(
-    new THREE.ConeGeometry(0.09, 0.34, 6),
-    new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false })
-  );
-  flashMesh.rotation.x = Math.PI / 2;
-  flashMesh.position.set(0, 0, -0.18);
+  // Star-shaped muzzle flash (hidden until firing).
+  const flashMesh = makeMuzzleFlash();
   flashMesh.visible = false;
   muzzle.add(flashMesh);
 
-  // Bake buffered parts into merged geometry per material. The rig hierarchy
-  // (torso/head/limbs/gun) stays fully animatable — only the draw calls drop.
-  [legL, legR, armL, armR, torso, head, mag, gun].forEach(finalize);
+  // Held-weapon builder: swaps the gun mesh to match the equipped weapon,
+  // merging per material so draw calls stay constant across swaps.
+  const setWeapon = (type: WeaponType) => {
+    gunParts.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if ((m as unknown as { isMesh?: boolean }).isMesh && m.geometry) m.geometry.dispose();
+    });
+    gunParts.clear();
+
+    const rig = buildGunRig(type, gunMats);
+
+    // Gloved hands gripping the weapon (added to the body so they merge into
+    // the same poly bucket — no extra draw calls).
+    rig.hands.forEach((h, i) => {
+      const hand = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.1, 0.12), gunMats.poly);
+      hand.position.copy(h);
+      if (i === 0) hand.rotation.x = 0.35;
+      hand.castShadow = true;
+      rig.body.add(hand);
+    });
+
+    // Merge the whole rig (body + magazine + bolt + hands) into a few meshes.
+    const merged = mergeIntoGroup(rig.group);
+    rig.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if ((m as unknown as { isMesh?: boolean }).isMesh && m.geometry) m.geometry.dispose();
+    });
+    gunParts.add(merged);
+
+    muzzle.position.z = rig.muzzleZ;
+  };
+  setWeapon('ak47');
+
+  // Bake buffered body parts into merged geometry per material. The rig
+  // hierarchy (torso/head/limbs) stays fully animatable — only the draw calls
+  // drop. The gun is handled by setWeapon above.
+  [legL, legR, armL, armR, torso, head].forEach(finalize);
 
   // ===================== HIT ZONES =====================
   // Attached to the animated groups so they follow crouch/prone poses.
@@ -430,7 +419,6 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
   });
 
   // ---- skin switching ----
-  const palette = { fabric, fabricDark, vest, accentMat, accentDark, metal, glass, webbing, skin, gunMetal, gunPoly, wood };
   // Readability: faint self-illumination so operators read against the terrain
   // at range without looking emissive up close.
   fabric.emissive.set(isEnemy ? 0x1c0710 : 0x07120c);
@@ -485,8 +473,256 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
   return {
     root, torso, head, gun, muzzle, muzzleLight, rig,
     hitHead, hitBody, hitLimbs, accentColor: accent,
-    setSkin, flashHit, setMuzzleFlash
+    setSkin, flashHit, setMuzzleFlash, setWeapon
   };
+}
+
+// ============================================================
+// Weapon geometry — a single builder shared by the first-person
+// viewmodel and the third-person soldier weapon. Barrel points -Z,
+// receiver around the origin, stock toward +Z, grip -Y.
+// ============================================================
+export interface GunMats {
+  metal: THREE.MeshStandardMaterial;
+  poly: THREE.MeshStandardMaterial;
+  wood: THREE.MeshStandardMaterial;
+  glass: THREE.MeshStandardMaterial;
+  accent: THREE.MeshStandardMaterial;
+  tube: THREE.MeshStandardMaterial;
+  head: THREE.MeshStandardMaterial;
+}
+
+interface GunRig {
+  group: THREE.Group;
+  body: THREE.Group;
+  mag: THREE.Group;
+  bolt: THREE.Group;
+  muzzleZ: number;
+  hands: THREE.Vector3[];
+}
+
+export function buildGunRig(type: WeaponType, m: GunMats): GunRig {
+  const group = new THREE.Group();
+  const body = new THREE.Group();
+  const mag = new THREE.Group();
+  const bolt = new THREE.Group();
+  group.add(body, mag, bolt);
+
+  const box = (w: number, h: number, d: number, mat: THREE.Material, x = 0, y = 0, z = 0, rx = 0, rz = 0, parent: THREE.Object3D = body) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(rx, 0, rz);
+    mesh.castShadow = true;
+    parent.add(mesh);
+    return mesh;
+  };
+  const cyl = (rt: number, rb: number, h: number, mat: THREE.Material, x = 0, y = 0, z = 0, rx = 0, rz = 0, seg = 12, parent: THREE.Object3D = body) => {
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(rx, 0, rz);
+    mesh.castShadow = true;
+    parent.add(mesh);
+    return mesh;
+  };
+  const sph = (r: number, mat: THREE.Material, x = 0, y = 0, z = 0, parent: THREE.Object3D = body) => {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 8), mat);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    parent.add(mesh);
+    return mesh;
+  };
+
+  let muzzleZ = -0.8;
+  const hands: THREE.Vector3[] = [];
+
+  if (type === 'ak47') {
+    // Receiver + dust cover
+    box(0.075, 0.1, 0.42, m.metal, 0, 0.01, -0.02);
+    box(0.065, 0.03, 0.36, m.poly, 0, 0.075, -0.02);
+    // Barrel + gas tube + front sight post + hood
+    cyl(0.02, 0.02, 0.52, m.metal, 0, 0.02, -0.5, Math.PI / 2);
+    cyl(0.012, 0.012, 0.36, m.metal, 0, 0.065, -0.3, Math.PI / 2);
+    box(0.012, 0.1, 0.014, m.metal, 0, 0.07, -0.62);
+    box(0.034, 0.02, 0.02, m.metal, 0, 0.12, -0.62);
+    // Wooden handguard (upper + lower)
+    box(0.062, 0.03, 0.3, m.wood, 0, 0.05, -0.32);
+    box(0.062, 0.06, 0.3, m.wood, 0, -0.015, -0.32);
+    // Slanted muzzle brake
+    cyl(0.03, 0.025, 0.09, m.metal, 0, 0.02, -0.79, Math.PI / 2);
+    // Curved magazine (two angled segments)
+    box(0.05, 0.12, 0.085, m.poly, 0, -0.11, -0.02, -0.32, 0, mag);
+    box(0.05, 0.09, 0.08, m.poly, 0, -0.19, -0.07, -0.55, 0, mag);
+    // Wooden stock + sling swivel
+    box(0.058, 0.1, 0.27, m.wood, 0, 0.005, 0.27);
+    box(0.05, 0.04, 0.06, m.metal, 0, -0.05, 0.4);
+    // Pistol grip + trigger guard
+    box(0.04, 0.11, 0.05, m.poly, 0, -0.09, 0.16, 0.25);
+    box(0.02, 0.02, 0.07, m.metal, 0, -0.055, 0.05);
+    // Rear sight leaf
+    box(0.02, 0.03, 0.1, m.metal, 0, 0.075, 0.12);
+    muzzleZ = -0.85;
+    hands.push(new THREE.Vector3(0, -0.08, 0.15), new THREE.Vector3(0, -0.02, -0.3));
+  } else if (type === 'awm') {
+    // Receiver + bolt handle (on the right)
+    box(0.07, 0.11, 0.44, m.metal, 0, 0.01, 0);
+    box(0.065, 0.04, 0.38, m.poly, 0, 0.075, -0.01);
+    cyl(0.014, 0.014, 0.1, m.metal, 0.055, -0.01, 0.05, 0, Math.PI / 2, 8, bolt);
+    // Long barrel + two bands + brake
+    cyl(0.018, 0.018, 0.75, m.metal, 0, 0.02, -0.55, Math.PI / 2);
+    cyl(0.03, 0.03, 0.03, m.accent, 0, 0.02, -0.42, Math.PI / 2);
+    cyl(0.03, 0.03, 0.03, m.accent, 0, 0.02, -0.75, Math.PI / 2);
+    box(0.04, 0.05, 0.09, m.metal, 0, 0.02, -0.97);
+    // Scope: tube + objective bell + ocular + lens + rings
+    cyl(0.045, 0.045, 0.34, m.metal, 0, 0.115, 0.02, Math.PI / 2);
+    cyl(0.055, 0.045, 0.07, m.metal, 0, 0.115, -0.18, Math.PI / 2);
+    cyl(0.05, 0.04, 0.06, m.metal, 0, 0.115, 0.2, Math.PI / 2);
+    cyl(0.04, 0.04, 0.02, m.glass, 0, 0.115, -0.22, Math.PI / 2);
+    box(0.06, 0.03, 0.04, m.accent, 0, 0.115, -0.06);
+    box(0.06, 0.03, 0.04, m.accent, 0, 0.115, 0.1);
+    // Magazine
+    box(0.05, 0.14, 0.08, m.poly, 0, -0.12, 0.02, 0.12, 0, mag);
+    // Stock with cheek riser + butt pad
+    box(0.06, 0.11, 0.34, m.poly, 0, 0, 0.38);
+    box(0.06, 0.06, 0.2, m.poly, 0, 0.09, 0.3);
+    box(0.065, 0.12, 0.03, m.poly, 0, 0, 0.56);
+    // Folded bipod under the fore-end
+    cyl(0.008, 0.008, 0.36, m.metal, -0.035, -0.05, -0.52, 0, 0.08, 6);
+    cyl(0.008, 0.008, 0.36, m.metal, 0.035, -0.05, -0.52, 0, -0.08, 6);
+    // Grip
+    box(0.04, 0.1, 0.05, m.poly, 0, -0.09, 0.16, 0.25);
+    muzzleZ = -1.02;
+    hands.push(new THREE.Vector3(0, -0.08, 0.15), new THREE.Vector3(0, -0.02, -0.5));
+  } else if (type === 'shotgun') {
+    // Barrel + tube magazine + bead sight
+    cyl(0.03, 0.03, 0.78, m.metal, 0, 0.02, -0.42, Math.PI / 2);
+    cyl(0.024, 0.024, 0.56, m.metal, 0, -0.05, -0.3, Math.PI / 2);
+    sph(0.014, m.metal, 0, 0.05, -0.8);
+    // Pump forend (in bolt group for cycling)
+    box(0.065, 0.075, 0.2, m.wood, 0, -0.02, -0.34, 0, 0, bolt);
+    // Receiver + trigger guard
+    box(0.06, 0.09, 0.32, m.poly, 0, 0, 0.06);
+    box(0.02, 0.02, 0.08, m.metal, 0, -0.06, 0.04);
+    // Wooden stock
+    box(0.05, 0.1, 0.3, m.wood, 0, 0.005, 0.32);
+    muzzleZ = -0.82;
+    hands.push(new THREE.Vector3(0, -0.09, 0.12), new THREE.Vector3(0, -0.03, -0.34));
+  } else if (type === 'mp5') {
+    // Receiver + barrel + 3-lug muzzle
+    box(0.06, 0.1, 0.34, m.metal, 0, 0.01, 0.02);
+    box(0.055, 0.03, 0.3, m.poly, 0, 0.07, 0.02);
+    cyl(0.016, 0.016, 0.24, m.metal, 0, 0.02, -0.28, Math.PI / 2);
+    cyl(0.021, 0.021, 0.05, m.metal, 0, 0.02, -0.42, Math.PI / 2);
+    // Front sight ring + post
+    cyl(0.032, 0.032, 0.04, m.metal, 0, 0.06, -0.26, Math.PI / 2);
+    box(0.012, 0.06, 0.012, m.metal, 0, 0.085, -0.26);
+    // Curved magazine
+    box(0.045, 0.15, 0.06, m.poly, 0, -0.12, 0.02, 0.28, 0, mag);
+    // Vertical foregrip
+    box(0.035, 0.1, 0.05, m.poly, 0, -0.08, -0.2, 0.15);
+    // Collapsible stock (butt + two rods)
+    box(0.05, 0.09, 0.26, m.poly, 0, 0.02, 0.28);
+    cyl(0.008, 0.008, 0.2, m.metal, -0.03, 0.02, 0.16, Math.PI / 2, 0, 6);
+    cyl(0.008, 0.008, 0.2, m.metal, 0.03, 0.02, 0.16, Math.PI / 2, 0, 6);
+    // Drum rear sight
+    cyl(0.035, 0.035, 0.05, m.metal, 0, 0.06, 0.12, Math.PI / 2);
+    // Grip
+    box(0.035, 0.1, 0.05, m.poly, 0, -0.09, 0.14, 0.28);
+    muzzleZ = -0.46;
+    hands.push(new THREE.Vector3(0, -0.08, 0.13), new THREE.Vector3(0, -0.05, -0.2));
+  } else if (type === 'pistol') {
+    // Slide with rear serrations
+    box(0.05, 0.07, 0.26, m.metal, 0, 0.02, 0);
+    for (let i = 0; i < 3; i++) box(0.051, 0.02, 0.02, m.accent, 0, 0.055, 0.07 - i * 0.03);
+    // Frame + barrel tip
+    box(0.045, 0.05, 0.22, m.poly, 0, -0.02, 0.01);
+    cyl(0.012, 0.012, 0.04, m.metal, 0, 0.02, -0.15, Math.PI / 2);
+    // Sights + hammer
+    box(0.012, 0.02, 0.02, m.metal, 0, 0.065, -0.11);
+    box(0.012, 0.02, 0.02, m.metal, 0, 0.065, 0.11);
+    box(0.03, 0.03, 0.02, m.metal, 0, 0.05, 0.12);
+    // Grip + trigger guard
+    box(0.04, 0.11, 0.11, m.poly, 0, -0.09, -0.02, 0.18);
+    box(0.02, 0.02, 0.06, m.metal, 0, -0.03, 0.02);
+    muzzleZ = -0.17;
+    hands.push(new THREE.Vector3(0, -0.08, -0.01));
+  } else {
+    // RPG-7 — launch tube + warhead + rear flare + wooden shield
+    cyl(0.055, 0.055, 1.0, m.tube, 0, 0, 0, Math.PI / 2);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.28, 12), m.head);
+    cone.rotation.x = -Math.PI / 2;
+    cone.position.set(0, 0, -0.62);
+    cone.castShadow = true;
+    body.add(cone);
+    cyl(0.075, 0.04, 0.22, m.metal, 0, 0, 0.55, Math.PI / 2);
+    cyl(0.062, 0.062, 0.3, m.wood, 0, 0, 0.15, Math.PI / 2);
+    // Iron sights
+    box(0.012, 0.08, 0.014, m.metal, 0, 0.075, -0.35);
+    cyl(0.04, 0.04, 0.03, m.metal, 0, 0.075, 0.3, Math.PI / 2);
+    // Grips + trigger guard
+    box(0.045, 0.1, 0.06, m.poly, 0, -0.09, 0.1, 0.25);
+    box(0.02, 0.02, 0.07, m.metal, 0, -0.05, 0.08);
+    muzzleZ = -0.76;
+    hands.push(new THREE.Vector3(0, -0.08, 0.09), new THREE.Vector3(0, -0.05, -0.05));
+  }
+
+  return { group, body, mag, bolt, muzzleZ, hands };
+}
+
+// Merge every mesh inside `root` into one mesh per shared material (all gun
+// parts are non-indexed after conversion, so the merge never fails). Returns a
+// fresh group holding the merged meshes; the source meshes are NOT disposed by
+// this helper (callers own them).
+function mergeIntoGroup(root: THREE.Object3D): THREE.Group {
+  const out = new THREE.Group();
+  const buckets = new Map<THREE.Material, THREE.Mesh[]>();
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!(m as unknown as { isMesh?: boolean }).isMesh) return;
+    const mat = m.material as THREE.Material;
+    const b = buckets.get(mat);
+    if (b) b.push(m);
+    else buckets.set(mat, [m]);
+  });
+  buckets.forEach((meshes, mat) => {
+    const geos = meshes.map((m) => {
+      m.updateMatrix();
+      const g = m.geometry.clone().toNonIndexed();
+      g.applyMatrix4(m.matrix);
+      return g;
+    });
+    let merged: THREE.BufferGeometry;
+    if (geos.length === 1) merged = geos[0];
+    else {
+      merged = mergeGeometries(geos, false) ?? new THREE.BufferGeometry();
+      geos.forEach((g) => g.dispose());
+    }
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.castShadow = true;
+    out.add(mesh);
+  });
+  return out;
+}
+
+// Star-shaped additive muzzle flash — three crossed spikes + a hot core.
+function makeMuzzleFlash(): THREE.Group {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffd27a, transparent: true, opacity: 0.95,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const spikeGeo = new THREE.ConeGeometry(0.05, 0.3, 6);
+  for (let i = 0; i < 3; i++) {
+    const spike = new THREE.Mesh(spikeGeo, mat);
+    spike.rotation.x = -Math.PI / 2; // apex points forward (-Z)
+    spike.rotation.z = (i / 3) * Math.PI;
+    spike.position.set(0, 0, -0.18);
+    spike.scale.set(1, i === 0 ? 1.5 : 0.7, 1);
+    group.add(spike);
+  }
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), mat);
+  core.position.set(0, 0, -0.1);
+  group.add(core);
+  return group;
 }
 
 // ============================================================
@@ -502,96 +738,46 @@ export interface WeaponViewModel {
 
 export function createWeaponViewModel(type: WeaponType): WeaponViewModel {
   const group = new THREE.Group();
-  const gunMetal = new THREE.MeshStandardMaterial({ color: 0x0c1117, roughness: 0.35, metalness: 0.85 });
-  const gunPoly = new THREE.MeshStandardMaterial({ color: 0x1a1f26, roughness: 0.55, metalness: 0.35 });
-  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 0.6, metalness: 0.15 });
-  const glass = new THREE.MeshStandardMaterial({ color: 0x0b0f14, roughness: 0.12, metalness: 0.85 });
 
-  const box = (w: number, h: number, d: number, mat: THREE.Material, x = 0, y = 0, z = 0) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    group.add(m);
-    return m;
-  };
-  const cyl = (rt: number, rb: number, h: number, mat: THREE.Material, x = 0, y = 0, z = 0, seg = 12) => {
-    const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
-    m.position.set(x, y, z);
-    group.add(m);
-    return m;
+  const gunMats: GunMats = {
+    metal: new THREE.MeshStandardMaterial({ color: 0x11161c, roughness: 0.35, metalness: 0.85 }),
+    poly: new THREE.MeshStandardMaterial({ color: 0x1a1f26, roughness: 0.55, metalness: 0.35 }),
+    wood: new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 0.6, metalness: 0.15 }),
+    glass: new THREE.MeshStandardMaterial({ color: 0x0b0f14, roughness: 0.12, metalness: 0.85 }),
+    accent: new THREE.MeshStandardMaterial({ color: 0x3a4046, roughness: 0.5, metalness: 0.6 }),
+    tube: new THREE.MeshStandardMaterial({ color: 0x4a5a3a, roughness: 0.5, metalness: 0.4 }),
+    head: new THREE.MeshStandardMaterial({ color: 0x9a3412, roughness: 0.4, metalness: 0.5 })
   };
 
+  const rig = buildGunRig(type, gunMats);
+
+  // Merge the whole rig (body + magazine + bolt) into one mesh per material so
+  // the viewmodel stays cheap despite the extra detail.
+  const merged = mergeIntoGroup(rig.group);
+  rig.group.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if ((m as unknown as { isMesh?: boolean }).isMesh && m.geometry) m.geometry.dispose();
+  });
+  group.add(merged);
+
+  // Empty anchor groups — kept so the public interface (and a future reload
+  // animation) has stable attachment points.
   const mag = new THREE.Group();
   const bolt = new THREE.Group();
   group.add(mag, bolt);
 
-  // Barrel axis points -Z (out of the screen / toward target)
-  if (type === 'ak47') {
-    box(0.07, 0.1, 0.34, gunMetal, 0, 0, 0.05);                 // receiver
-    box(0.06, 0.08, 0.26, wood, 0, 0.01, -0.26);                // handguard
-    const b = cyl(0.02, 0.02, 0.42, gunMetal, 0, 0.01, -0.55);  b.rotation.x = Math.PI / 2;
-    cyl(0.028, 0.024, 0.08, gunMetal, 0, 0.01, -0.78).rotation.x = Math.PI / 2; // muzzle
-    const m = box(0.05, 0.16, 0.09, gunPoly, 0, -0.1, 0.02);    m.rotation.x = 0.2; m.userData.mag = true; mag.add(m);
-    box(0.06, 0.09, 0.24, wood, 0, 0.01, 0.26);                 // stock
-    box(0.04, 0.1, 0.05, gunPoly, 0, -0.08, 0.14).rotation.x = 0.3; // grip
-    box(0.04, 0.06, 0.1, gunMetal, 0, 0.07, 0);                 // iron sight block
-  } else if (type === 'awm') {
-    box(0.07, 0.1, 0.36, gunPoly, 0, 0, 0.02);                  // receiver
-    const b = cyl(0.02, 0.02, 0.72, gunMetal, 0, 0.02, -0.6);   b.rotation.x = Math.PI / 2; // long barrel
-    box(0.03, 0.05, 0.08, gunMetal, 0, -0.07, -0.9);            // muzzle brake
-    const m = box(0.05, 0.13, 0.08, gunPoly, 0, -0.1, 0.04);    m.rotation.x = 0.25; m.userData.mag = true; mag.add(m);
-    box(0.06, 0.1, 0.3, gunPoly, 0, 0.02, 0.3);                 // stock
-    const scope = cyl(0.04, 0.04, 0.3, gunMetal, 0, 0.1, 0.02); scope.rotation.x = Math.PI / 2;
-    cyl(0.045, 0.045, 0.03, glass, 0, 0.1, -0.12).rotation.x = Math.PI / 2;
-    const bl = cyl(0.02, 0.02, 0.12, gunMetal, 0.06, -0.02, 0.1); bl.rotation.z = Math.PI / 2; bl.userData.bolt = true; bolt.add(bl);
-  } else if (type === 'shotgun') {
-    const barrel = cyl(0.035, 0.035, 0.7, gunMetal, 0, 0.02, -0.4); barrel.rotation.x = Math.PI / 2;
-    const tube = cyl(0.028, 0.028, 0.5, gunMetal, 0, -0.05, -0.28); tube.rotation.x = Math.PI / 2;
-    box(0.06, 0.09, 0.3, wood, 0, 0, 0.1);                      // receiver
-    const pump = box(0.07, 0.07, 0.18, wood, 0, -0.04, -0.35);  pump.userData.bolt = true; bolt.add(pump);
-    box(0.05, 0.09, 0.26, wood, 0, 0.01, 0.32);                 // stock
-    box(0.04, 0.1, 0.05, gunPoly, 0, -0.08, 0.18).rotation.x = 0.3;
-  } else if (type === 'mp5') {
-    box(0.06, 0.09, 0.3, gunMetal, 0, 0, 0.02);                 // receiver
-    const b = cyl(0.016, 0.016, 0.3, gunMetal, 0, 0.02, -0.28); b.rotation.x = Math.PI / 2;
-    box(0.05, 0.06, 0.08, gunMetal, 0, -0.05, -0.42);           // fore
-    const m = box(0.045, 0.14, 0.06, gunMetal, 0, -0.1, 0.04);  m.userData.mag = true; mag.add(m);
-    box(0.05, 0.07, 0.24, gunPoly, 0, 0.02, 0.22);              // collapsible stock
-    box(0.04, 0.09, 0.05, gunPoly, 0, -0.08, 0.12).rotation.x = 0.3;
-  } else if (type === 'pistol') {
-    box(0.05, 0.07, 0.24, gunMetal, 0, 0, 0);                   // slide
-    box(0.04, 0.1, 0.12, gunPoly, 0, -0.08, -0.02).rotation.x = 0.2; // grip
-    const m = box(0.04, 0.08, 0.05, gunMetal, 0, -0.06, -0.08); m.userData.mag = true; mag.add(m);
-    cyl(0.012, 0.012, 0.05, gunMetal, 0, 0.02, -0.14).rotation.x = Math.PI / 2; // barrel tip
-  } else {
-    // rpg — green tube + warhead
-    const tube = cyl(0.055, 0.055, 0.9, new THREE.MeshStandardMaterial({ color: 0x4a5a3a, roughness: 0.5, metalness: 0.4 }), 0, 0, 0);
-    tube.rotation.x = Math.PI / 2;
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.24, 10), new THREE.MeshStandardMaterial({ color: 0x9a3412, roughness: 0.4, metalness: 0.5 }));
-    cone.rotation.x = -Math.PI / 2;
-    cone.position.set(0, 0, -0.58);
-    group.add(cone);
-    cyl(0.06, 0.06, 0.1, gunMetal, 0, 0, 0.48).rotation.x = Math.PI / 2;   // rear vent
-    box(0.04, 0.1, 0.06, gunPoly, 0, -0.09, 0.1).rotation.x = 0.3;         // grip
-    box(0.05, 0.06, 0.08, gunMetal, 0, 0.08, 0.05);                        // sight
-  }
-
   const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.02, type === 'rpg' ? -0.66 : type === 'awm' ? -0.95 : type === 'shotgun' ? -0.72 : type === 'mp5' ? -0.4 : type === 'pistol' ? -0.14 : -0.8);
+  muzzle.position.set(0, 0.02, rig.muzzleZ);
   group.add(muzzle);
 
+  // Flash first so it stays muzzle.children[0] (the render loop toggles it).
+  const flash = makeMuzzleFlash();
+  flash.visible = false;
+  muzzle.add(flash);
+
   const muzzleLight = new THREE.PointLight(0xffd27a, 0, 8, 1.8);
-  muzzleLight.position.copy(muzzle.position);
-  group.add(muzzleLight);
+  muzzleLight.position.set(0, 0, -0.08);
+  muzzle.add(muzzleLight);
 
-  const flashMesh = new THREE.Mesh(
-    new THREE.ConeGeometry(0.07, 0.26, 6),
-    new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false })
-  );
-  flashMesh.rotation.x = Math.PI / 2;
-  flashMesh.position.z = -0.12;
-  flashMesh.visible = false;
-  muzzle.add(flashMesh);
-
-  return { group, muzzle, mag, bolt, muzzleLight };
+  return { group, muzzle, mag: rig.mag, bolt: rig.bolt, muzzleLight };
 }

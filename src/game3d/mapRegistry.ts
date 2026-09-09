@@ -531,7 +531,11 @@ function mergeStaticWorld(scene: THREE.Scene, root: THREE.Group): void {
   mergedGroup.name = 'staticWorld';
   buckets.forEach((meshes, mat) => {
     const geos = meshes.map((m) => {
-      const g = m.geometry.clone();
+      // Normalise to non-indexed: building `Parts` emit non-indexed geometry
+      // while street lamps / road props are indexed — mixing them breaks the
+      // merge. Converting everything up-front keeps every bucket mergeable.
+      let g = m.geometry.clone();
+      if (g.index) g = g.toNonIndexed();
       g.applyMatrix4(m.matrixWorld);
       return g;
     });
