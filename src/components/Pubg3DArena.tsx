@@ -1591,15 +1591,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const crouchEye = p.crouched ? 1.15 : 1.65;
       const eyeH = p.prone ? 0.42 : crouchEye + (sliding ? -0.25 : 0);
       // FPP aim = per-weapon ADS (sniper zooms to 15°). TPP aim = shoulder zoom.
-      // On tall phone screens a fixed vertical FOV leaves the horizontal sight
-      // picture too narrow, so the hip-fire view is widened by aspect ratio
-      // (ADS zoom targets stay unchanged for consistent weapon feel).
-      const portrait = camera.aspect < 0.75;
-      const hipFov = portrait
-        ? Math.min(105, 2 * Math.atan(Math.tan((33 * Math.PI) / 180) / Math.max(camera.aspect, 0.1)) * (180 / Math.PI))
-        : 75;
-      const fovFpp = aimRef.current ? (currentWeapon()?.def.adsFov ?? 45) : hipFov;
-      const fovTpp = aimRef.current ? 55 : hipFov * (70 / 75);
+      const fovFpp = aimRef.current ? (currentWeapon()?.def.adsFov ?? 45) : 75;
+      const fovTpp = aimRef.current ? 55 : 70;
       const targetFov = THREE.MathUtils.lerp(fovFpp, fovTpp, tpp);
       camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, dt * 10);
       camera.updateProjectionMatrix();
@@ -1645,10 +1638,10 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       // (instead of sitting on the player's back).
       const cosY = Math.cos(p.yaw), sinY = Math.sin(p.yaw);
       const camDist = 3.4;
-      const shoulder = 0.62 + p.lean * 0.5;
+      const shoulder = 0.55 + p.lean * 0.5;
       const tppPos = new THREE.Vector3(
         p.pos.x + sinY * camDist + cosY * shoulder,
-        p.pos.y + 2.05 + camH + bobY,
+        p.pos.y + 1.75 + camH + bobY,
         p.pos.z + cosY * camDist - sinY * shoulder
       );
 
