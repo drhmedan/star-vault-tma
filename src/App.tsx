@@ -233,10 +233,10 @@ export const App: React.FC = () => {
 
       {/* Main View Area */}
       <main className={activeMatch ? "flex-1 w-full h-full p-0 overflow-hidden" : "p-4 flex-1 pb-24"}>
-        {/* TAB 1: CYBER WAR (ONLINE PVP 1v1 TACTICAL ARENA) */}
+        {/* TAB 1: CYBER WAR (ONLINE 3D TACTICAL WARZONE) */}
         {tab === 'cyberwar' && (
           activeMatch ? (
-            <CyberWarzoneArena 
+            <Pubg3DArena 
               user={user}
               roomCode={activeMatch.roomCode}
               mode={activeMatch.mode}
