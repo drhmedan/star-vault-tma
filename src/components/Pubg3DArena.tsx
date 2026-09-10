@@ -12,7 +12,7 @@ import {
   GrenadeType, LocomotionState, LootItem3D, SurfaceType, SoldierMesh
 } from '../game3d/types3d';
 import { multiplayer, ConnectionStatus } from '../services/multiplayer';
-import { MatchInfo } from '../services/matchmaking';
+import { GameMode, MatchInfo } from '../services/matchmaking';
 import { MatchCompletion, SettleOutcome } from '../services/ledger';
 import { config } from '../config';
 import { soldierSkinById, weaponSkinById, DEFAULT_WEAPON_SKIN_ID, DEFAULT_SOLDIER_SKIN_ID, WeaponSkin } from '../data/skins';
@@ -129,6 +129,8 @@ interface Pubg3DArenaProps {
   mapId?: MapId;
   /** Matchmade room metadata (human roster + bot fill count). */
   matchInfo?: MatchInfo;
+  /** Game mode (ffa / 2v2 / squad). Defaults to ffa for local rooms. */
+  gameMode?: GameMode;
   onExit: () => void;
   /** Resolves to the deltas actually applied (server-settled when online). */
   onMatchComplete: (result: MatchCompletion) => Promise<SettleOutcome>;
@@ -165,6 +167,8 @@ interface EnemyState {
   id: number;
   name: string;
   isHuman: boolean;
+  /** Team index in team modes (0/1); -1 in free-for-all (hostile to all). */
+  team: number;
   pos: THREE.Vector3; vel: THREE.Vector3;
   yaw: number;
   hp: number; armor: number;
@@ -187,6 +191,17 @@ interface EnemyUnit {
   soldier: SoldierMesh;
 }
 
+/** A fighter a bot can target — either the local player or another unit. */
+interface BotTarget {
+  pos: THREE.Vector3;
+  hp: number;
+  crouched: boolean;
+  prone: boolean;
+  reloading: boolean;
+  isPlayer: boolean;
+  unit: EnemyState | null;
+}
+
 interface Proj {
   kind: 'rocket' | 'bullet' | 'frag' | 'smoke' | 'flash';
   mesh: THREE.Group;
@@ -194,6 +209,8 @@ interface Proj {
   gravity: number;
   dmg: number;
   owner: 'player' | 'bot';
+  /** Owner's team (for friendly-fire-safe explosions in team modes). */
+  team: number;
   fuse: number;
   bounced: boolean;
 }
@@ -210,7 +227,13 @@ interface HudState {
   crouched: boolean; prone: boolean; sprinting: boolean; locomotion: LocomotionState;
   viewMode: 'tpp' | 'fpp'; countdown: number;
   reloadProgress: number;
-  enemyTags: { id: number; name: string; hp: number; isHuman: boolean; x: number; y: number }[];
+  enemyTags: { id: number; name: string; hp: number; isHuman: boolean; team: number; x: number; y: number }[];
+  /** Team-mode banner data (0 in free-for-all). */
+  teamMode: boolean;
+  myTeam: number;
+  teamAlive: number;
+  foeAlive: number;
+  spectator: boolean;
 }
 
 interface EngineApi {
@@ -237,7 +260,7 @@ interface EngineApi {
 let floatId = 0;
 
 export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
-  user, roomCode, mode, stakeStars, mapId = 'warzone', matchInfo, onExit, onMatchComplete
+  user, roomCode, mode, stakeStars, mapId = 'warzone', matchInfo, gameMode, onExit, onMatchComplete
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
@@ -291,7 +314,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     crouched: false, prone: false, sprinting: false, locomotion: 'idle',
     viewMode: 'fpp', countdown: 3,
     reloadProgress: 0,
-    enemyTags: []
+    enemyTags: [],
+    teamMode: false, myTeam: -1, teamAlive: 0, foeAlive: 0, spectator: false
   });
   const [connStatus, setConnStatus] = useState<ConnectionStatus>('connecting');
   const [opponentName, setOpponentName] = useState<string>(
@@ -381,12 +405,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     scene.add(playerSoldier.root);
 
     // ---- Enemy roster ----------------------------------------------------
-    // Every match is "you + up to 7 enemies". A matchmade room carries one
-    // human opponent (P2P) plus a bot fill; private rooms are 1v1; AI
-    // training is a single bot. Bots are simulated locally by every client.
-    const makeEnemy = (id: number, name: string, isHuman: boolean, pos: THREE.Vector3): EnemyUnit => {
+    // Every match is "you + up to 7 fighters". A matchmade room carries every
+    // other human (P2P mesh) plus a bot fill up to the mode's roster size;
+    // private rooms are 1v1; AI training is a single bot. Bots are simulated
+    // locally by every client.
+    const makeEnemy = (id: number, name: string, isHuman: boolean, team: number, pos: THREE.Vector3): EnemyUnit => {
       const state: EnemyState = {
-        id, name, isHuman, pos: pos.clone(), vel: new THREE.Vector3(), yaw: 0,
+        id, name, isHuman, team, pos: pos.clone(), vel: new THREE.Vector3(), yaw: 0,
         hp: 100, armor: 0, alive: true,
         state: 'patrol', stateT: 0,
         lastKnown: new THREE.Vector3(), spotted: false,
@@ -402,6 +427,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       scene.add(soldier.root);
       return { state, soldier };
     };
+
+    // ---- Game mode resolution -------------------------------------------
+    // Team modes (2v2 / squad) assign squads by seat parity (the server tags
+    // humans; bots continue the parity so both sides always end up even).
+    const mySlot = matchInfo ? (matchInfo.players.find((pl) => pl.id === user.id)?.slot ?? 0) : 0;
+    const resolvedMode: GameMode = matchInfo?.gameMode ?? gameMode ?? 'ffa';
+    const teamSize = matchInfo?.teamSize ?? (resolvedMode === '2v2' ? 2 : resolvedMode === 'squad' ? 4 : 1);
+    const teamMode = teamSize >= 2;
+    const myPlayer = matchInfo?.players.find((pl) => pl.id === user.id);
+    const myTeam = teamMode ? (typeof myPlayer?.team === 'number' ? myPlayer.team : mySlot % 2) : -1;
 
     const scatterSpawn = (index: number): THREE.Vector3 => {
       const ang = (index / 8) * Math.PI * 2 + 0.6;
@@ -421,25 +456,41 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const z = THREE.MathUtils.clamp(Math.sin(ang) * r, -env.bounds + 8, env.bounds - 8);
       return new THREE.Vector3(x, getHeightAt(x, z), z);
     };
-    const mySlot = matchInfo ? (matchInfo.players.find((pl) => pl.id === user.id)?.slot ?? 0) : 0;
+    // Team-mode drop: both squads land on opposite sides of the map, teammates
+    // clustered inside a small arc (deterministic per seat, shared by all).
+    const teamSpawn = (slot: number, team: number): THREE.Vector3 => {
+      const base = team === 0 ? 0.9 : 0.9 + Math.PI;
+      const idx = Math.floor(slot / 2);
+      const members = Math.max(2, teamSize);
+      const arc = 0.5;
+      const ang = members <= 1 ? base : base + (idx - (members - 1) / 2) * (arc / (members - 1));
+      const r = 50;
+      const x = THREE.MathUtils.clamp(Math.cos(ang) * r, -env.bounds + 10, env.bounds - 10);
+      const z = THREE.MathUtils.clamp(Math.sin(ang) * r, -env.bounds + 10, env.bounds - 10);
+      return new THREE.Vector3(x, getHeightAt(x, z), z);
+    };
 
     const enemyUnits: EnemyUnit[] = [];
     const rosterHumans = matchInfo ? matchInfo.players.filter((pl) => pl.id !== user.id) : [];
     const fillBots = matchInfo ? Math.max(0, matchInfo.fillBots) : 0;
     let spawnIndex = 0;
     if (mode === 'ai') {
-      enemyUnits.push(makeEnemy(-1, 'بوت تكتيكي', false, env.spawnB));
+      enemyUnits.push(makeEnemy(-1, 'بوت تكتيكي', false, -1, env.spawnB));
     } else if (mode === 'host' || mode === 'join') {
-      enemyUnits.push(makeEnemy(0, 'في انتظار الخصم…', true, env.spawnB));
+      enemyUnits.push(makeEnemy(0, 'في انتظار الخصم…', true, -1, env.spawnB));
     } else {
-      // Matchmade: human opponents at their slot positions + bot fill.
+      // Matchmade: human opponents at their seat positions + bot fill. In team
+      // modes every fighter is tagged with a squad; in FFA everyone is solo.
       for (const opp of rosterHumans) {
         const oppSlot = typeof opp.slot === 'number' ? opp.slot : mySlot + 1;
-        enemyUnits.push(makeEnemy(opp.id, opp.name || 'خصم', true, ringSpawn(oppSlot)));
+        const oppTeam = teamMode ? (typeof opp.team === 'number' ? opp.team : oppSlot % 2) : -1;
+        enemyUnits.push(makeEnemy(opp.id, opp.name || 'خصم', true, oppTeam, teamMode ? teamSpawn(oppSlot, oppTeam) : ringSpawn(oppSlot)));
         spawnIndex += 1;
       }
       for (let i = 0; i < fillBots; i++) {
-        enemyUnits.push(makeEnemy(-(i + 1), `بوت ${i + 1}`, false, scatterSpawn(spawnIndex + i)));
+        const botSeat = rosterHumans.length + i;
+        const botTeam = teamMode ? botSeat % 2 : -1;
+        enemyUnits.push(makeEnemy(-(i + 1), `بوت ${i + 1}`, false, botTeam, teamMode ? teamSpawn(botSeat, botTeam) : scatterSpawn(spawnIndex + i)));
       }
     }
     const hasHumanOpponent = enemyUnits.some((u) => u.state.isHuman);
@@ -453,7 +504,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     scene.add(camera);
 
     const p = pRef.current;
-    p.pos.copy(mode === 'matchmade' ? ringSpawn(mySlot) : env.spawnA);
+    p.pos.copy(mode === 'matchmade' ? (teamMode ? teamSpawn(mySlot, myTeam) : ringSpawn(mySlot)) : env.spawnA);
     // Face the arena center so both humans start looking toward the action.
     p.yaw = Math.atan2(-p.pos.x, -p.pos.z);
 
@@ -600,6 +651,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         });
     }
 
+    // ---- Team helpers (free-for-all treats everyone as hostile) ----
+    const teamAlive = (team: number) => enemyUnits.reduce((n, u) => n + (u.state.alive && u.state.team === team ? 1 : 0), 0);
+    const foesAlive = () => enemyUnits.some((u) => u.state.alive && (teamMode ? u.state.team !== myTeam : true));
+    const checkTeamResolution = () => {
+      if (!teamMode || gameOverRef.current) return;
+      // Win: every hostile fighter is down. Lose: my whole squad is out.
+      if (!foesAlive()) { endMatch(true); return; }
+      if (!p.alive && teamAlive(myTeam) === 0) { endMatch(false); return; }
+    };
+
     function damagePlayer(dmg: number, fromPos?: THREE.Vector3) {
       if (phaseRef.current === 'grace' || !p.alive || gameOverRef.current) return;
       let absorbed = 0;
@@ -632,7 +693,10 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       }
       if (p.hp <= 0) {
         p.alive = false;
-        endMatch(false);
+        // Team modes: fall and spectate — the match resolves when a whole
+        // squad is wiped, not the moment a single fighter drops.
+        if (teamMode) checkTeamResolution();
+        else endMatch(false);
       }
     }
 
@@ -660,12 +724,32 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         tgHaptics.notification('success');
         setCenterMsg({ text: headshot ? 'إصابة رأس قاتلة!' : 'تم القضاء على الهدف', sub: headshot ? 'HEADSHOT' : 'ELIMINATED', key: Date.now() });
         pushFeed(`أنت قضيت على ${enemy.isHuman ? 'الخصم' : enemy.name}`, headshot ? '🎯' : '💀');
-        if (enemy.isHuman) {
+        if (enemy.isHuman && !teamMode) {
+          // FFA duel: taking down the human opponent ends the round instantly.
           multiplayer.sendGameOver(user.id);
           endMatch(true);
+        }
+        if (teamMode) {
+          checkTeamResolution();
         } else if (!enemyUnits.some((u) => u.state.alive)) {
           endMatch(true);
         }
+      }
+    }
+
+    // Damage applied to a unit by a bot (squadmate or foe). Every client runs
+    // the same bots locally, so no network message is sent — each client's own
+    // bot sim already deals this damage to that client's player copy. Only ever
+    // called in team modes (FFA bots hunt the player exclusively).
+    function botDamageUnit(enemy: EnemyState, dmg: number, headshot: boolean) {
+      if (!enemy.alive || gameOverRef.current) return;
+      let absorbed = 0;
+      if (enemy.armor > 0) { absorbed = Math.min(enemy.armor, Math.round(dmg * 0.5)); enemy.armor -= absorbed; }
+      enemy.hp = Math.max(0, enemy.hp - (dmg - absorbed));
+      enemy.spotted = true;
+      if (enemy.hp <= 0) {
+        enemy.alive = false;
+        checkTeamResolution();
       }
     }
 
@@ -686,6 +770,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         for (let i = 0; i < enemyUnits.length; i++) {
           const u = enemyUnits[i];
           if (!u.state.alive) continue;
+          if (teamMode && u.state.team === myTeam) continue; // friendly fire off
           const ray = new THREE.Raycaster(origin, dir, 0, range);
           const zones = [u.soldier.hitHead, u.soldier.hitBody, ...u.soldier.hitLimbs];
           u.soldier.root.updateMatrixWorld(true);
@@ -766,7 +851,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       return best;
     }
 
-    function triggerExplosion(pos: THREE.Vector3, radius: number) {
+    function triggerExplosion(pos: THREE.Vector3, radius: number, owner: 'player' | 'bot' = 'player', ownerTeam: number = myTeam) {
       const light = new THREE.PointLight(0xf97316, 20, 30);
       light.position.copy(pos);
       scene.add(light);
@@ -801,11 +886,17 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       fovPunch = Math.min(0.2, fovPunch + 6);
       tgHaptics.impact('heavy');
       const dToP = pos.distanceTo(p.pos);
-      if (dToP < radius + 2) damagePlayer(Math.round(90 * Math.max(0.15, 1 - dToP / (radius + 2))), pos);
+      const hurtsPlayer = owner === 'player' || !teamMode || ownerTeam !== myTeam;
+      if (hurtsPlayer && dToP < radius + 2) damagePlayer(Math.round(90 * Math.max(0.15, 1 - dToP / (radius + 2))), pos);
       for (const u of enemyUnits) {
         if (!u.state.alive) continue;
+        if (teamMode && u.state.team === ownerTeam) continue; // never splash your own squad
         const dToE = pos.distanceTo(u.state.pos);
-        if (dToE < radius + 2) damageEnemy(u.state, u.soldier, Math.round(120 * Math.max(0.15, 1 - dToE / (radius + 2))), dToE < 2.5);
+        if (dToE < radius + 2) {
+          const dmg = Math.round(120 * Math.max(0.15, 1 - dToE / (radius + 2)));
+          if (owner === 'player') damageEnemy(u.state, u.soldier, dmg, dToE < 2.5);
+          else botDamageUnit(u.state, dmg, dToE < 2.5);
+        }
       }
     }
 
@@ -868,7 +959,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         scene.add(rocket);
         projectiles.push({
           kind: 'rocket', mesh: rocket, vel: baseDir.clone().multiplyScalar(52),
-          gravity: 2.2, dmg: w.def.damageMin + Math.random() * (w.def.damageMax - w.def.damageMin), owner: 'player', fuse: 0, bounced: false
+          gravity: 2.2, dmg: w.def.damageMin + Math.random() * (w.def.damageMax - w.def.damageMin), owner: 'player', team: myTeam, fuse: 0, bounced: false
         });
         if (mode !== 'ai') multiplayer.sendShootBullets([{ weaponType: 'rpg' }]);
         return;
@@ -895,7 +986,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           projectiles.push({
             kind: 'bullet', mesh: bullet, vel: dir.clone().multiplyScalar(w.def.bulletSpeed),
             gravity: 6.5, dmg: w.def.damageMin + Math.random() * (w.def.damageMax - w.def.damageMin),
-            owner: 'player', fuse: 0, bounced: false
+            owner: 'player', team: myTeam, fuse: 0, bounced: false
           });
           continue;
         }
@@ -943,7 +1034,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       projectiles.push({
         kind, mesh: grp,
         vel: dir.multiplyScalar(14).add(new THREE.Vector3(0, 6.5, 0)),
-        gravity: 12, dmg: kind === 'frag' ? 100 : 0, owner: 'player',
+        gravity: 12, dmg: kind === 'frag' ? 100 : 0, owner: 'player', team: myTeam,
         fuse: kind === 'frag' ? 3 : 2, bounced: false
       });
     }
@@ -1060,6 +1151,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         } else if (msg.type === 'BULLET_HIT') {
           if (msg.payload.victimId === user.id) {
             const opp = findHumanEnemy(msg.senderId);
+            if (opp && teamMode && opp.state.team === myTeam) return; // teammate can't hurt me
             damagePlayer(msg.payload.damage, opp ? opp.soldier.root.position : undefined);
           }
         } else if (msg.type === 'LOOT_TAKEN') {
@@ -1101,20 +1193,48 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         const b = u.state;
         const botSoldier = u.soldier;
 
-        const dist = b.pos.distanceTo(p.pos);
-        const angToPlayer = Math.atan2(p.pos.x - b.pos.x, p.pos.z - b.pos.z);
+        // ---- Target selection ----
+        // Free-for-all: bots only ever hunt the player. Team modes: a bot hunts
+        // the nearest hostile fighter (player, enemy bot or enemy human), biased
+        // toward the player so the human stays at the centre of the action.
+        const candidates: BotTarget[] = [];
+        const playerHostile = !teamMode || b.team !== myTeam;
+        if (p.alive && playerHostile) {
+          candidates.push({ pos: p.pos, hp: p.hp, crouched: p.crouched, prone: p.prone, reloading: p.reloading, isPlayer: true, unit: null });
+        }
+        if (teamMode) {
+          for (const other of enemyUnits) {
+            if (other.state === b || !other.state.alive || other.state.team === b.team) continue;
+            candidates.push({ pos: other.state.pos, hp: other.state.hp, crouched: false, prone: false, reloading: other.state.reloadingUntil > now, isPlayer: false, unit: other.state });
+          }
+        }
+        let tgt: BotTarget | null = null;
+        if (candidates.length > 0) {
+          tgt = candidates[0];
+          let best = Infinity;
+          for (const c of candidates) {
+            const score = b.pos.distanceTo(c.pos) * (c.isPlayer ? 0.8 : 1);
+            if (score < best) { best = score; tgt = c; }
+          }
+        }
+
+        const tpos = tgt ? tgt.pos : b.pos.clone().add(new THREE.Vector3(30, 0, 30));
+        const dist = b.pos.distanceTo(tpos);
+        const angToTarget = Math.atan2(tpos.x - b.pos.x, tpos.z - b.pos.z);
+        const reloadingT = tgt ? tgt.reloading : false;
+        const hpT = tgt ? tgt.hp : 100;
         b.stateT += dt;
 
         const eyeB = b.pos.clone().add(new THREE.Vector3(0, 1.5, 0));
-        const eyeP = p.pos.clone().add(new THREE.Vector3(0, 1.4, 0));
-        const canSee = !lineBlocked(obstacles, eyeB, eyeP);
+        const eyeT = tpos.clone().add(new THREE.Vector3(0, 1.4, 0));
+        const canSee = tgt ? !lineBlocked(obstacles, eyeB, eyeT) : false;
         if (canSee && dist < 95) {
           if (!b.spotted) {
             // Reaction time: a bot needs a beat to acquire a fresh target.
             b.lastFire = Math.max(b.lastFire, now + 350 + Math.random() * 650);
           }
           b.spotted = true;
-          b.lastKnown.copy(p.pos);
+          b.lastKnown.copy(tpos);
         }
 
         // Aggro budget: only a couple of bots pressure the player at once, so
@@ -1129,24 +1249,25 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         if (b.stateT > 0.9 + Math.random() * 1.2) {
           b.stateT = 0;
           b.dodgeDir = Math.random() > 0.5 ? 1 : -1;
-          if (!canEngage && dist > 18) b.state = Math.random() < 0.5 ? 'patrol' : 'take_cover';
+          if (!tgt) b.state = 'patrol';
+          else if (!canEngage && dist > 18) b.state = Math.random() < 0.5 ? 'patrol' : 'take_cover';
           else if (!b.spotted && dist > 60) b.state = 'patrol';
           else if (hpPct < 0.25) b.state = 'retreat';
           else if (hpPct < 0.5 && Math.random() < 0.35) b.state = 'take_cover';
           else if (dist > 55) b.state = 'hunt';
           else if (dist > 24) b.state = Math.random() > 0.45 ? 'flank' : 'engage';
           else if (hpPct < 0.3) b.state = 'retreat';
-          else if (p.reloading || p.hp < 30) b.state = 'push';
+          else if (reloadingT || hpT < 30) b.state = 'push';
           else b.state = 'engage';
         }
 
-        const faceAngle = b.state === 'retreat' ? angToPlayer + Math.PI : angToPlayer;
+        const faceAngle = b.state === 'retreat' ? angToTarget + Math.PI : angToTarget;
         const rotSpeed = dist < 15 ? 7 : 4.5;
         b.yaw += (faceAngle - b.yaw) * Math.min(1, dt * rotSpeed);
         botSoldier.root.rotation.y = b.yaw;
 
         let speed = 0;
-        let moveAngle = angToPlayer;
+        let moveAngle = angToTarget;
         switch (b.state) {
           case 'patrol': {
             if (b.pauseT > 0) { b.pauseT -= dt; speed = 0; }
@@ -1164,12 +1285,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
             }
             break;
           }
-          case 'hunt': speed = 5.6; moveAngle = angToPlayer; break;
-          case 'engage': speed = 4.0; moveAngle = angToPlayer + b.dodgeDir * 0.4; break;
-          case 'flank': speed = 4.7; moveAngle = angToPlayer + b.dodgeDir * (Math.PI * 0.42); break;
-          case 'take_cover': speed = 4.4; moveAngle = angToPlayer + Math.PI * 0.5 * b.dodgeDir; break;
-          case 'push': speed = 6.0; moveAngle = angToPlayer; break;
-          case 'retreat': speed = 4.3; moveAngle = angToPlayer + Math.PI + b.dodgeDir * 0.6; break;
+          case 'hunt': speed = 5.6; moveAngle = angToTarget; break;
+          case 'engage': speed = 4.0; moveAngle = angToTarget + b.dodgeDir * 0.4; break;
+          case 'flank': speed = 4.7; moveAngle = angToTarget + b.dodgeDir * (Math.PI * 0.42); break;
+          case 'take_cover': speed = 4.4; moveAngle = angToTarget + Math.PI * 0.5 * b.dodgeDir; break;
+          case 'push': speed = 6.0; moveAngle = angToTarget; break;
+          case 'retreat': speed = 4.3; moveAngle = angToTarget + Math.PI + b.dodgeDir * 0.6; break;
           case 'heal': speed = 0; break;
         }
 
@@ -1198,7 +1319,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         botSoldier.root.position.copy(b.pos);
 
         // ---- Firing (combat only; gentler, fairer pressure) ----
-        if (phaseRef.current !== 'combat') continue;
+        if (phaseRef.current !== 'combat' || !tgt) continue;
         if (b.reloadingUntil > now) continue;
         if (b.ammo <= 0) { b.reloadingUntil = now + 2200; b.ammo = 30; sound.playReload(); continue; }
 
@@ -1233,9 +1354,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           const pan = toBot.clone().cross(camDir).y * 2;
           sound.playSpatialShot(botWep, dist2, pan);
 
-          const spreadRad = (1 - accBase) * 0.09 + (p.crouched ? 0.02 : 0) + (p.prone ? 0.03 : 0);
+          const spreadRad = (1 - accBase) * 0.09 + (tgt.crouched ? 0.02 : 0) + (tgt.prone ? 0.03 : 0);
           const from = botSoldier.muzzle.getWorldPosition(new THREE.Vector3());
-          const aim = p.pos.clone().add(new THREE.Vector3(
+          const aim = tpos.clone().add(new THREE.Vector3(
             (Math.random() - 0.5) * 2 * spreadRad * dist * 0.5,
             1.3 + (Math.random() - 0.5) * 0.4,
             (Math.random() - 0.5) * 2 * spreadRad * dist * 0.5
@@ -1248,25 +1369,30 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           if (canSee && Math.random() < accBase) {
             const dmg = 6 + Math.floor(Math.random() * 6);
             const headshot = Math.random() < 0.08;
-            damagePlayer(headshot ? dmg * 2.5 : dmg, b.pos);
-            if (headshot) pushFeed('أصابك البوت في الرأس!', '🎯');
+            const applied = headshot ? dmg * 2.5 : dmg;
+            if (tgt.isPlayer) {
+              damagePlayer(applied, b.pos);
+              if (headshot) pushFeed('أصابك البوت في الرأس!', '🎯');
+            } else if (tgt.unit) {
+              botDamageUnit(tgt.unit, applied, headshot);
+            }
           } else if (Math.random() < 0.3) {
             sound.playWhiz();
           }
         }
 
-        // ---- Grenade at player behind cover ----
+        // ---- Grenade at the target behind cover ----
         if (phaseRef.current === 'combat' && b.spotted && dist > 10 && dist < 40 && !canSee && now - b.lastGrenade > 12000 + Math.random() * 6000) {
           b.lastGrenade = now;
           const grp = new THREE.Group();
           grp.add(new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshStandardMaterial({ color: 0x4a5f3a, roughness: 0.6 })));
           grp.position.copy(b.pos).add(new THREE.Vector3(0, 1.6, 0));
           scene.add(grp);
-          const toTarget = p.pos.clone().sub(b.pos);
+          const toTarget = tpos.clone().sub(b.pos);
           toTarget.y = 0;
           const d = Math.max(1, toTarget.length());
           const vel = toTarget.normalize().multiplyScalar(Math.min(16, d * 0.9)).add(new THREE.Vector3(0, 7, 0));
-          projectiles.push({ kind: 'frag', mesh: grp, vel, gravity: 12, dmg: 90, owner: 'bot', fuse: 3, bounced: false });
+          projectiles.push({ kind: 'frag', mesh: grp, vel, gravity: 12, dmg: 90, owner: 'bot', team: b.team, fuse: 3, bounced: false });
         }
       }
     }
@@ -1470,7 +1596,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       if (keys.has('d') || keys.has('arrowright')) mx += 1;
       if (keys.has('a') || keys.has('arrowleft')) mx -= 1;
       if (mv.x !== 0 || mv.y !== 0) { mx += mv.x; mz += -mv.y; }
-      const canMove = phase === 'combat' || phase === 'grace';
+      const canMove = (phase === 'combat' || phase === 'grace') && p.alive;
       const moving = (mx !== 0 || mz !== 0) && canMove;
 
       // Lean
@@ -1643,7 +1769,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
             const blastPos = pr.mesh.position.clone();
             scene.remove(pr.mesh);
             projectiles.splice(i, 1);
-            triggerExplosion(blastPos, 9);
+            triggerExplosion(blastPos, 9, pr.owner, pr.team);
           }
         } else if (pr.kind === 'bullet') {
           const dir = pr.vel.clone().normalize();
@@ -1736,7 +1862,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
             scene.remove(pr.mesh);
             projectiles.splice(i, 1);
             if (pr.kind === 'frag') {
-              triggerExplosion(blastPos, 8);
+              triggerExplosion(blastPos, 8, pr.owner, pr.team);
               if (pr.owner === 'player') pushFeed('قنبلتك انفجرت', '💣');
             } else if (pr.kind === 'smoke') {
               sound.playSmokePop();
@@ -1846,15 +1972,27 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       }
 
       if (phase === 'combat' && elapsed > totalMatch && !gameOverRef.current) {
-        // Timer decision: with a human opponent, higher remaining HP wins; a
-        // pure bot battle is won by surviving with at least one elimination.
-        const opp = enemyUnits.find((u) => u.state.isHuman && u.state.alive);
-        endMatch(opp ? p.hp >= opp.state.hp : p.alive && p.kills >= 1);
+        if (teamMode) {
+          // Team timer: the side with more fighters standing wins.
+          const mine = teamAlive(myTeam) + (p.alive ? 1 : 0);
+          const theirs = teamAlive(1 - myTeam);
+          endMatch(mine >= theirs);
+        } else {
+          // Timer decision: with a human opponent, higher remaining HP wins; a
+          // pure bot battle is won by surviving with at least one elimination.
+          const opp = enemyUnits.find((u) => u.state.isHuman && u.state.alive);
+          endMatch(opp ? p.hp >= opp.state.hp : p.alive && p.kills >= 1);
+        }
       }
       if (hasHumanOpponent && phase === 'combat' && elapsed > 20 && !gameOverRef.current && multiplayer.peerCount === 0) {
-        // Every human opponent dropped (or never connected): take the win
-        // instead of leaving the player stuck in an empty arena.
-        endMatch(true);
+        // Every human peer dropped (or never connected). In team modes their
+        // units fall so squad logic can resolve; otherwise take the win.
+        if (teamMode) {
+          for (const u of enemyUnits) if (u.state.isHuman && u.state.alive) u.state.alive = false;
+          checkTeamResolution();
+        } else {
+          endMatch(true);
+        }
       }
 
       // ---- Player pose ----
@@ -2158,7 +2296,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           const x = (sv.x * 0.5 + 0.5) * width;
           const y = (-sv.y * 0.5 + 0.5) * height;
           if (x < -30 || x > width + 30 || y < -40 || y > height + 40) continue;
-          tags.push({ id: u.state.id, name: u.state.name, hp: Math.max(0, Math.round(u.state.hp)), isHuman: u.state.isHuman, x, y });
+          tags.push({ id: u.state.id, name: u.state.name, hp: Math.max(0, Math.round(u.state.hp)), isHuman: u.state.isHuman, team: u.state.team, x, y });
         }
 
         setHud({
@@ -2173,7 +2311,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           viewMode,
           countdown: Math.max(1, countNum),
           reloadProgress: p.reloading && w ? THREE.MathUtils.clamp(1 - (p.reloadUntil - now) / w.def.reloadTimeMs, 0, 1) : 0,
-          enemyTags: tags
+          enemyTags: tags,
+          teamMode, myTeam,
+          teamAlive: teamMode ? teamAlive(myTeam) + (p.alive ? 1 : 0) : 0,
+          foeAlive: teamMode ? teamAlive(1 - myTeam) : 0,
+          spectator: teamMode && !p.alive && phase !== 'over'
         });
       }
 
@@ -2196,11 +2338,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           for (const u of enemyUnits) {
             if (!u.state.alive) continue;
             const s = u.state;
-            if (!s.isHuman) {
+            const teammate = teamMode && s.team === myTeam;
+            if (!teammate && !s.isHuman) {
               const canSee = !lineBlocked(obstacles, p.pos.clone().add(new THREE.Vector3(0, 1.5, 0)), s.pos.clone().add(new THREE.Vector3(0, 1.4, 0)));
               if (!s.spotted || (!canSee && now - s.lastFire > 2000)) continue;
             }
-            g.fillStyle = s.isHuman ? '#fb7185' : '#ef4444';
+            g.fillStyle = teammate ? '#34d399' : s.isHuman ? '#fb7185' : '#ef4444';
             g.beginPath();
             g.arc(cx + s.pos.x * scale, cy + s.pos.z * scale, 3, 0, Math.PI * 2);
             g.fill();
@@ -2386,18 +2529,21 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       ))}
 
       {/* ===================== ENEMY NAME TAGS ===================== */}
-      {hud.enemyTags.map((t) => (
-        <div key={t.id} className="absolute z-20 pointer-events-none flex flex-col items-center"
-          style={{ left: t.x, top: t.y, transform: 'translate(-50%,-100%)' }}>
-          <span className={`text-[10px] font-black leading-none whitespace-nowrap drop-shadow-[0_1px_3px_rgba(0,0,0,.9)] ${t.isHuman ? 'text-rose-300' : 'text-red-300/90'}`}>
-            {t.name}
-          </span>
-          <div className={`mt-1 h-[3px] rounded-full overflow-hidden ${t.isHuman ? 'w-10' : 'w-7'} bg-black/50`}>
-            <div className="h-full rounded-full transition-all duration-200"
-              style={{ width: `${t.hp}%`, background: t.hp > 50 ? '#22d3ee' : t.hp > 25 ? '#f59e0b' : '#ef4444' }} />
+      {hud.enemyTags.map((t) => {
+        const teammate = hud.teamMode && t.team === hud.myTeam;
+        return (
+          <div key={t.id} className="absolute z-20 pointer-events-none flex flex-col items-center"
+            style={{ left: t.x, top: t.y, transform: 'translate(-50%,-100%)' }}>
+            <span className={`text-[10px] font-black leading-none whitespace-nowrap drop-shadow-[0_1px_3px_rgba(0,0,0,.9)] ${teammate ? 'text-emerald-300' : t.isHuman ? 'text-rose-300' : 'text-red-300/90'}`}>
+              {teammate ? '⬢ ' : ''}{t.name}
+            </span>
+            <div className={`mt-1 h-[3px] rounded-full overflow-hidden ${t.isHuman ? 'w-10' : 'w-7'} bg-black/50`}>
+              <div className="h-full rounded-full transition-all duration-200"
+                style={{ width: `${t.hp}%`, background: teammate ? '#34d399' : t.hp > 50 ? '#22d3ee' : t.hp > 25 ? '#f59e0b' : '#ef4444' }} />
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {/* ===================== TOP HUD — minimal, corner-docked ===================== */}
       {hud.phase !== 'over' && (
@@ -2420,6 +2566,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
             <div className="mt-0.5 text-[9px] font-bold text-white/50 drop-shadow-[0_1px_2px_rgba(0,0,0,.8)]">
               {hud.compass}° {hud.compass >= 315 || hud.compass < 45 ? 'شمال' : hud.compass < 135 ? 'شرق' : hud.compass < 225 ? 'جنوب' : 'غرب'}
             </div>
+            {hud.teamMode && (
+              <div className="mt-1 flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-[9px] font-black">
+                <span className="flex items-center gap-1 text-emerald-300"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> أنت {hud.teamAlive}</span>
+                <span className="w-px h-2.5 bg-white/20" />
+                <span className="flex items-center gap-1 text-rose-300">{hud.foeAlive} <span className="w-1.5 h-1.5 rounded-full bg-rose-400" /> الخصم</span>
+              </div>
+            )}
           </div>
 
           {/* Connection + kills + exit — tiny icons */}
@@ -2472,6 +2625,15 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         <div className="absolute top-16 inset-x-0 z-40 flex justify-center pointer-events-none">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-cyan-300/25 bg-cyan-400/10 text-cyan-100 text-[10px] font-bold backdrop-blur-sm">
             <Shield className="w-3 h-3" /> فترة حماية — لا يمكن إصابتك
+          </div>
+        </div>
+      )}
+
+      {/* Spectator banner: downed in a team match but the squad still fights */}
+      {hud.spectator && hud.phase !== 'over' && (
+        <div className="absolute top-24 inset-x-0 z-40 flex justify-center pointer-events-none">
+          <div className="flex items-center gap-2 px-4 py-1.5 rounded-full border border-amber-300/30 bg-amber-500/15 text-amber-100 text-[10px] font-black backdrop-blur-sm shadow-[0_0_24px_rgba(251,191,36,.2)]">
+            أنت خارج المعركة — فريقك يقاتل ({hud.teamAlive} مقابل {hud.foeAlive})
           </div>
         </div>
       )}

@@ -9,11 +9,15 @@ export interface MatchedPlayer {
   name: string;
   /** 0-based seat in the room, assigned by the server for deterministic spawns. */
   slot?: number;
+  /** Team index (0/1) in team modes, assigned by seat parity. */
+  team?: number;
 }
+
+export type GameMode = 'quick' | 'ffa' | '2v2' | 'squad' | 'ranked';
 
 export interface MatchRoom {
   roomCode: string;
-  mode: 'quick' | 'ranked';
+  mode: GameMode;
   host: number;
   players: MatchedPlayer[];
   fillBots: number;
@@ -28,6 +32,10 @@ export interface MatchInfo {
   fillBots: number;
   /** My seat in the room (0-based), used for deterministic spawn placement. */
   mySlot?: number;
+  /** The game mode this room was gathered under. */
+  gameMode: GameMode;
+  /** Squad size of the mode (1 = solo, 2 = duo, 4 = squad). */
+  teamSize: number;
 }
 
 export type MatchmakerEvent =
@@ -40,7 +48,7 @@ export type QueueParams = {
   userId: number;
   name: string;
   teamSize: number;
-  mode: 'quick' | 'ranked';
+  mode: GameMode;
   url: string;
 };
 
@@ -80,7 +88,7 @@ export class MatchmakingClient {
         this.handler?.({ type: 'status', waiting: p.waiting ?? 0, total: p.total ?? 0 });
       } else if (msg.type === 'room_ready') {
         const p = (msg.payload ?? {}) as {
-          roomCode?: string; mode?: 'quick' | 'ranked'; host?: number;
+          roomCode?: string; mode?: GameMode; host?: number;
           players?: MatchedPlayer[]; fillBots?: number; teamSize?: number;
         };
         const room: MatchRoom = {

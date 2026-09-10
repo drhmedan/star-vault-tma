@@ -20,7 +20,7 @@ import { BattlePass } from './components/BattlePass';
 import { SkinsPanel } from './components/SkinsPanel';
 import { VipPanel } from './components/VipPanel';
 import { MapId } from './game3d/types3d';
-import { MatchInfo } from './services/matchmaking';
+import { GameMode, MatchInfo } from './services/matchmaking';
 import { config } from './config';
 import { ledger, LedgerError, MatchCompletion, SettleOutcome } from './services/ledger';
 import { BATTLE_PASS, normalizeBattlePass } from './data/battlePass';
@@ -41,6 +41,7 @@ export const App: React.FC = () => {
     stakeStars: number;
     mapId?: MapId;
     matchInfo?: MatchInfo;
+    gameMode?: GameMode;
   } | null>(null);
 
   // Initialize or load user profile
@@ -238,7 +239,7 @@ export const App: React.FC = () => {
   const escrowRef = useRef<{ id: string; verified: boolean; amount: number }>({ id: '', verified: false, amount: 0 });
   const startingMatchRef = useRef(false);
 
-  const handleStartPvPMatch = async (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId: MapId = 'warzone', matchInfo?: MatchInfo) => {
+  const handleStartPvPMatch = async (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId: MapId = 'warzone', matchInfo?: MatchInfo, gameMode?: GameMode) => {
     if (startingMatchRef.current) return;
     if (stakeStars > 0 && user.stars < stakeStars) {
       setTab('shop');
@@ -268,7 +269,7 @@ export const App: React.FC = () => {
           setUser(p => ({ ...p, stars: p.stars - stakeStars }));
         }
       }
-      setActiveMatch({ roomCode, mode, stakeStars, mapId, matchInfo });
+      setActiveMatch({ roomCode, mode, stakeStars, mapId, matchInfo, gameMode: matchInfo?.gameMode ?? gameMode ?? 'ffa' });
     } finally {
       startingMatchRef.current = false;
     }
@@ -375,6 +376,7 @@ export const App: React.FC = () => {
               stakeStars={activeMatch.stakeStars}
               mapId={activeMatch.mapId}
               matchInfo={activeMatch.matchInfo}
+              gameMode={activeMatch.gameMode}
               onExit={() => setActiveMatch(null)}
               onMatchComplete={handleMatchComplete}
             />

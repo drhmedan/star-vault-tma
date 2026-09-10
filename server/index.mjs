@@ -36,21 +36,53 @@ const HOST = '0.0.0.0';
 const ledger = createLedger();
 
 // ---- Matchmaking configuration (env-overridable for tests) ----
-// quick  = the live queue: pairs humans 1v1 (maxHumans 2) and fills the map
-//          up to totalFighters with bots, so nobody ever waits past the window.
-// ranked = future competitive queue: full human lobby, no bot fill.
+// quick  = 1v1 + bot fill (the instant "always alive" default: nobody waits).
+// ffa    = free-for-all up to 8 humans + bot fill, last human standing wins.
+// 2v2    = duo elimination: 2 teams of 2 (bots fill empty seats), last team wins.
+// squad  = squad elimination: 2 teams of 4 (bots fill empty seats), last team wins.
+// ranked = competitive singles: full human lobby, no bot fill.
+// Teams are assigned by join-order parity (slot % 2) so every client derives
+// identical teams without a handshake.
 const MODES = {
   quick: {
-    maxHumans: Number(process.env.QUICK_MAX_HUMANS || 2),       // reliable PvP ceiling (1v1)
-    totalFighters: Number(process.env.QUICK_TOTAL_FIGHTERS || 8), // map filled with bots
-    fillMs: Number(process.env.QUICK_FILL_MS || 30000),         // gathering window
-    allowBotFill: true
+    maxHumans: Number(process.env.QUICK_MAX_HUMANS || 2),
+    minHumans: 2, // wait up to the window for a human duel before bot fill
+    totalFighters: Number(process.env.QUICK_TOTAL_FIGHTERS || 8),
+    fillMs: Number(process.env.QUICK_FILL_MS || 30000),
+    allowBotFill: true,
+    teamSize: 1
+  },
+  ffa: {
+    maxHumans: Number(process.env.FFA_MAX_HUMANS || 8),
+    minHumans: 2, // ≥2 humans -> go now; a lone player waits out the window
+    totalFighters: 8,
+    fillMs: Number(process.env.FFA_FILL_MS || 30000),
+    allowBotFill: true,
+    teamSize: 1
+  },
+  '2v2': {
+    maxHumans: 4,
+    minHumans: 2,
+    totalFighters: 4,
+    fillMs: Number(process.env.DUO_FILL_MS || 45000),
+    allowBotFill: true,
+    teamSize: 2
+  },
+  squad: {
+    maxHumans: 8,
+    minHumans: 2,
+    totalFighters: 8,
+    fillMs: Number(process.env.SQUAD_FILL_MS || 60000),
+    allowBotFill: true,
+    teamSize: 4
   },
   ranked: {
     maxHumans: Number(process.env.RANKED_MAX_HUMANS || 8),
+    minHumans: 8,
     totalFighters: 8,
     fillMs: Number(process.env.RANKED_FILL_MS || 60000),
-    allowBotFill: false
+    allowBotFill: false,
+    teamSize: 1
   }
 };
 
@@ -90,7 +122,8 @@ function formRoom(members, mode) {
   const roomCode = 'ROOM-' + randomBytes(3).toString('hex').toUpperCase();
   // Seats are assigned in join order so every client derives identical,
   // deterministic spawn points for the whole roster (mesh spawn symmetry).
-  const players = members.map((m, i) => ({ id: m.id, name: m.name, slot: i }));
+  // Team = seat parity (0/1) — meaningful for 2v2/squad, harmless elsewhere.
+  const players = members.map((m, i) => ({ id: m.id, name: m.name, slot: i, team: i % 2 }));
   const fillBots = cfg.allowBotFill ? Math.max(0, cfg.totalFighters - players.length) : 0;
   log(`room ${roomCode} formed (mode=${mode}, real=${players.length}, bots=${fillBots})`);
   for (const m of members) {
@@ -99,7 +132,7 @@ function formRoom(members, mode) {
     bySocket.delete(m.ws);
     send(m.ws, {
       type: 'room_ready',
-      payload: { roomCode, mode, host: players[0].id, players, fillBots, teamSize: m.teamSize }
+      payload: { roomCode, mode, host: players[0].id, players, fillBots, teamSize: cfg.teamSize }
     });
   }
   broadcastStatus();
@@ -117,11 +150,10 @@ function tick() {
       formRoom(group.slice(0, cfg.maxHumans), mode);
       continue;
     }
-    // Gathering window elapsed -> start with whoever is here. Quick mode
-    // fills the remaining slots with bots (a lone player gets a full bot
-    // battle instead of waiting forever); ranked keeps waiting for a full
-    // human lobby.
-    if (cfg.allowBotFill && now - group[0].joinedAt >= cfg.fillMs) {
+    // At least two humans matched -> go now (bots fill the empty seats). A
+    // lone player waits out the gathering window, then fights bots instead
+    // of waiting forever. Ranked (no bot fill) keeps waiting for a full lobby.
+    if (cfg.allowBotFill && (group.length >= cfg.minHumans || now - group[0].joinedAt >= cfg.fillMs)) {
       formRoom(group.slice(0, cfg.maxHumans), mode);
     }
   }
@@ -270,8 +302,10 @@ matchWss.on('connection', (ws) => {
       const p = msg.payload || {};
       const id = typeof p.id === 'number' ? p.id : Math.floor(Math.random() * 1e9);
       const name = String(p.name || 'لاعب').slice(0, 32);
-      const teamSize = [1, 2, 4].includes(p.teamSize) ? p.teamSize : 1;
-      const mode = p.mode === 'ranked' ? 'ranked' : 'quick';
+      // The mode dictates the team size (server is authoritative — clients
+      // can't lie their way into a different lobby shape).
+      const mode = MODES[p.mode] ? p.mode : 'quick';
+      const teamSize = MODES[mode].teamSize;
       if (bySocket.has(ws)) leaveQueue(ws);
       const entry = { ws, id, name, teamSize, mode, joinedAt: Date.now() };
       queue.push(entry);
