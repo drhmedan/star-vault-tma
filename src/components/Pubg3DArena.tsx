@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Heart, RefreshCw, Shield } from 'lucide-react';
 import { UserProfile } from '../types';
 import { buildMapEnvironment, MAP_CATALOG } from '../game3d/mapRegistry';
 import { createSoldierMesh, createWeaponViewModel, WeaponViewModel } from '../game3d/worldBuilder';
@@ -1910,14 +1910,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const onLookEnd = () => { lookTouchRef.current = null; };
 
   const hpPct = Math.max(0, Math.min(100, hud.hp));
-  const hpGrad = hpPct > 55 ? 'from-emerald-500 via-green-400 to-emerald-400' : hpPct > 25 ? 'from-amber-500 via-amber-400 to-yellow-400' : 'from-red-600 via-rose-500 to-red-500';
-  const hpGlow = hpPct > 55 ? 'rgba(16,185,129,.5)' : hpPct > 25 ? 'rgba(245,158,11,.5)' : 'rgba(239,68,68,.6)';
   const lowHp = hpPct <= 25;
+  const hpSegs = Math.max(0, Math.min(20, Math.round((hpPct / 100) * 20)));
+  const hpSegColor = hpPct > 55 ? 'bg-emerald-400' : hpPct > 25 ? 'bg-amber-400' : 'bg-red-500';
+  const hpSegGlow = hpPct > 55 ? 'rgba(52,211,153,.55)' : hpPct > 25 ? 'rgba(251,191,36,.55)' : 'rgba(239,68,68,.6)';
   const activeDef = WEAPONS[hud.wtype];
   const isMobile = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
   // Dynamic crosshair spread: tight while aiming/crouched, wide while sprinting.
   const crossSpread = hud.aiming ? 3 : hud.sprinting ? 13 : hud.crouched || hud.prone ? 6 : 9;
   const armorPct = Math.max(0, Math.min(100, hud.armor));
+  const armorSegs = Math.max(0, Math.min(20, Math.round((armorPct / 100) * 20)));
   const signalBars = connStatus === 'connected' ? 3 : connStatus === 'connecting' ? 2 : 1;
 
   // ============================================================
@@ -2002,57 +2004,56 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         </div>
       ))}
 
-      {/* ===================== TOP BAR (glass morphism) ===================== */}
+      {/* ===================== TOP HUD — minimal, corner-docked ===================== */}
       {hud.phase !== 'over' && (
         <>
-          {/* Minimap with compass ring */}
-          <div className="absolute top-2 left-2 z-20 pointer-events-none">
-            <div className="relative w-[92px] h-[92px] rounded-full bg-white/[0.06] backdrop-blur-xl border border-white/15 shadow-[0_4px_24px_rgba(0,0,0,.45),inset_0_1px_0_rgba(255,255,255,.1)] flex items-center justify-center">
-              <canvas ref={minimapRef} width={92} height={92} className="absolute inset-0 rounded-full" />
-              <div className="absolute top-0.5 left-1/2 -translate-x-1/2 text-[7px] font-black text-cyan-300 drop-shadow-[0_0_4px_rgba(34,211,238,.8)]">N</div>
+          {/* Minimap — small, subtle ring */}
+          <div className="absolute top-3 left-3 z-20 pointer-events-none">
+            <div className="relative w-[68px] h-[68px] rounded-full border border-white/10 bg-black/25 backdrop-blur-sm shadow-[0_2px_14px_rgba(0,0,0,.35)] overflow-hidden">
+              <canvas ref={minimapRef} width={68} height={68} className="absolute inset-0" />
+              <div className="absolute top-0.5 left-1/2 -translate-x-1/2 text-[6px] font-black text-white/60">N</div>
             </div>
           </div>
 
-          {/* Timer + zone + compass */}
-          <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1 pointer-events-none">
-            <div className={`flex items-center gap-2 rounded-full border px-3.5 py-1.5 font-mono text-xs backdrop-blur-xl shadow-[0_4px_20px_rgba(0,0,0,.4),inset_0_1px_0_rgba(255,255,255,.08)] ${hud.matchTimer <= 60 ? 'border-amber-400/50 bg-amber-950/70 text-amber-300 animate-pulse' : 'border-white/12 bg-black/55 text-cyan-200'}`}>
-              <span className="font-black tabular-nums">⏱ {Math.floor(hud.matchTimer / 60)}:{String(hud.matchTimer % 60).padStart(2, '0')}</span>
-              <span className="w-px h-3.5 bg-white/20" />
-              <span className={`tabular-nums font-bold ${hud.zoneTimer <= 10 ? 'text-red-400' : 'text-sky-300'}`}>◉ {hud.zoneTimer}s</span>
+          {/* Timer + zone — tiny pill */}
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none">
+            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border font-mono text-[10px] font-bold backdrop-blur-sm ${hud.matchTimer <= 60 ? 'border-amber-300/30 bg-amber-500/10 text-amber-300' : 'border-white/10 bg-black/25 text-white/90'}`}>
+              <span className="tabular-nums">⏱ {Math.floor(hud.matchTimer / 60)}:{String(hud.matchTimer % 60).padStart(2, '0')}</span>
+              <span className="w-px h-2.5 bg-white/20" />
+              <span className={`tabular-nums ${hud.zoneTimer <= 10 ? 'text-red-400' : 'text-sky-300'}`}>◉ {hud.zoneTimer}s</span>
             </div>
-            <div className="flex items-center gap-1 text-[10px] font-mono text-slate-200 bg-black/55 backdrop-blur-xl rounded-full px-2.5 py-0.5 border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,.06)]">
-              <span className="font-black text-cyan-300 tabular-nums">{hud.compass}°</span>
-              <span>{hud.compass >= 315 || hud.compass < 45 ? 'شمال' : hud.compass < 135 ? 'شرق' : hud.compass < 225 ? 'جنوب' : 'غرب'}</span>
+            <div className="mt-0.5 text-[9px] font-bold text-white/50 drop-shadow-[0_1px_2px_rgba(0,0,0,.8)]">
+              {hud.compass}° {hud.compass >= 315 || hud.compass < 45 ? 'شمال' : hud.compass < 135 ? 'شرق' : hud.compass < 225 ? 'جنوب' : 'غرب'}
             </div>
           </div>
 
-          {/* Connection + kills + exit */}
-          <div className="absolute top-2 right-2 z-20 flex items-center gap-1.5">
-            <div className="flex items-center gap-1.5 bg-black/55 backdrop-blur-xl px-2.5 py-1.5 rounded-full border border-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,.06)]">
-              <div className="flex items-end gap-[2px] h-3">
+          {/* Connection + kills + exit — tiny icons */}
+          <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm">
+              <div className="flex items-end gap-[2px] h-2.5">
                 {[0, 1, 2].map((i) => (
-                  <span key={i} className={`w-[3px] rounded-[1px] transition-colors ${i < signalBars ? 'bg-emerald-400' : 'bg-white/20'}`} style={{ height: `${4 + i * 3}px` }} />
+                  <span key={i} className={`w-[3px] rounded-[1px] transition-colors ${i < signalBars ? 'bg-emerald-400' : 'bg-white/25'}`} style={{ height: `${3 + i * 2.5}px` }} />
                 ))}
               </div>
-              <span className="text-[10px] font-bold text-white max-w-24 truncate">{opponentName}</span>
+              <span className="text-[9px] font-bold text-white/80 max-w-20 truncate">{opponentName}</span>
             </div>
-            <div className="flex items-center gap-1 bg-black/55 backdrop-blur-xl px-2.5 py-1.5 rounded-full border border-red-400/30 shadow-[inset_0_1px_0_rgba(255,255,255,.06)]">
-              <span className="text-xs">💀</span>
+            <div className="flex items-center gap-1 px-2 py-1 rounded-full border border-red-400/25 bg-black/25 backdrop-blur-sm">
+              <span className="text-[10px] leading-none">💀</span>
               <span className="text-[11px] font-black font-mono text-red-400 tabular-nums">{hud.kills}</span>
             </div>
             <button onClick={() => { sound.playClick(); onExit(); }}
-              className="p-2 bg-black/55 border border-white/10 text-slate-300 rounded-full backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,.08)] active:scale-90 transition-transform">
+              className="w-8 h-8 flex items-center justify-center rounded-full border border-white/10 bg-black/25 text-slate-300 backdrop-blur-sm active:scale-90 transition-transform">
               <ArrowLeft className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* Kill feed */}
-          <div className="absolute top-14 right-2 z-20 flex flex-col gap-1 items-end pointer-events-none">
+          {/* Kill feed — transparent, no boxes */}
+          <div className="absolute top-14 right-3 z-20 flex flex-col gap-1 items-end pointer-events-none">
             <AnimatePresence>
               {killFeed.map((f) => (
-                <motion.div key={f.id} initial={{ opacity: 0, x: 30, scale: 0.9 }} animate={{ opacity: 1, x: 0, scale: 1 }} exit={{ opacity: 0, x: 30, scale: 0.9 }}
-                  className="flex items-center gap-1.5 bg-black/55 backdrop-blur-xl px-2.5 py-1 rounded-lg border border-white/10 text-[10px] font-bold text-slate-100 shadow-[0_4px_16px_rgba(0,0,0,.4)]">
-                  <span className="text-xs">{f.icon}</span><span>{f.text}</span>
+                <motion.div key={f.id} initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 24 }}
+                  className="flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-white/10 bg-black/25 backdrop-blur-sm text-[9px] font-bold text-white/90">
+                  <span className="text-[10px]">{f.icon}</span><span>{f.text}</span>
                 </motion.div>
               ))}
             </AnimatePresence>
@@ -2062,15 +2063,20 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
       {/* ===================== PHASE OVERLAYS ===================== */}
       {hud.phase === 'countdown' && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/40 pointer-events-none">
-          <div className="text-7xl font-black text-cyan-300 drop-shadow-[0_0_30px_rgba(34,211,238,.6)]">{hud.countdown}</div>
-          <div className="mt-2 text-sm font-bold tracking-widest text-white/80">استعد للمعركة</div>
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center pointer-events-none">
+          <div className="absolute inset-0 bg-black/30" />
+          <AnimatePresence mode="popLayout">
+            <motion.div key={hud.countdown} initial={{ scale: 1.6, opacity: 0, filter: 'blur(8px)' }} animate={{ scale: 1, opacity: 1, filter: 'blur(0px)' }} exit={{ scale: 0.8, opacity: 0 }} transition={{ duration: 0.35, ease: 'easeOut' }}>
+              <div className="text-[120px] leading-none font-black text-transparent bg-clip-text bg-gradient-to-b from-white via-cyan-200 to-cyan-500 drop-shadow-[0_0_60px_rgba(34,211,238,.45)] tabular-nums">{hud.countdown}</div>
+            </motion.div>
+          </AnimatePresence>
+          <div className="mt-2 text-xs font-black tracking-[0.6em] text-white/60">استعد للمعركة</div>
         </div>
       )}
       {hud.phase === 'grace' && (
-        <div className="absolute top-24 inset-x-0 z-40 flex justify-center pointer-events-none">
-          <div className="bg-cyan-500/15 border border-cyan-400/40 text-cyan-200 px-4 py-1.5 rounded-full text-xs font-bold backdrop-blur-md animate-pulse">
-            🛡️ فترة حماية — لا يمكن إصابتك
+        <div className="absolute top-16 inset-x-0 z-40 flex justify-center pointer-events-none">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-cyan-300/25 bg-cyan-400/10 text-cyan-100 text-[10px] font-bold backdrop-blur-sm">
+            <Shield className="w-3 h-3" /> فترة حماية — لا يمكن إصابتك
           </div>
         </div>
       )}
@@ -2093,165 +2099,136 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         )}
       </AnimatePresence>
 
-      {/* ===================== BOTTOM HUD ===================== */}
+      {/* ===================== BOTTOM HUD — slim, corner-docked, non-blocking ===================== */}
       {hud.phase !== 'over' && (
-        <div className="absolute bottom-0 inset-x-0 z-20 p-2 pb-3 flex flex-col gap-1.5 pointer-events-none">
-          {/* Health + Armor */}
-          <div className="flex items-stretch gap-2 pointer-events-auto">
-            <div className="flex-1 bg-black/55 backdrop-blur-xl rounded-2xl border border-white/12 p-2.5 shadow-[0_4px_24px_rgba(0,0,0,.45),inset_0_1px_0_rgba(255,255,255,.08)]">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-black text-slate-200 flex items-center gap-1.5">❤️ الصحة</span>
-                <motion.span key={hud.hp} initial={{ scale: 1.35, color: '#fca5a5' }} animate={{ scale: 1, color: '#ffffff' }}
-                  transition={{ duration: 0.25 }}
-                  className={`text-sm font-black font-mono tabular-nums ${lowHp ? 'text-red-400 animate-pulse' : 'text-white'}`}>{hud.hp}</motion.span>
+        <>
+          {/* Health + Armor — bottom-left, slim segmented bars */}
+          <div className="absolute bottom-3 left-3 z-20 flex flex-col gap-1.5 pointer-events-none">
+            <div className="flex items-center gap-1.5">
+              <Heart className={`w-3.5 h-3.5 drop-shadow ${lowHp ? 'text-red-400' : 'text-emerald-400'}`} fill="currentColor" strokeWidth={0} />
+              <div className="flex items-center gap-[2px]">
+                {Array.from({ length: 20 }).map((_, i) => (
+                  <span key={i} className={`h-3 w-[3px] rounded-[1px] transition-colors duration-200 ${i < hpSegs ? hpSegColor : 'bg-white/15'}`} style={i < hpSegs ? { boxShadow: `0 0 6px ${hpSegGlow}` } : undefined} />
+                ))}
               </div>
-              <div className="relative w-full h-2.5 rounded-full bg-black/60 overflow-hidden ring-1 ring-white/10">
-                <div className={`absolute inset-y-0 left-0 bg-gradient-to-r ${hpGrad} transition-[width] duration-300 ease-out`} style={{ width: `${hpPct}%`, boxShadow: `0 0 12px ${hpGlow}` }}>
-                  <div className="absolute inset-0 bg-gradient-to-b from-white/40 to-transparent" />
-                </div>
-                <div className="absolute inset-0 flex justify-between px-[3px]">
-                  {[0, 1, 2, 3, 4].map((i) => <span key={i} className="w-px h-full bg-black/35" />)}
-                </div>
+              <span className={`w-7 text-left font-mono font-black text-sm tabular-nums drop-shadow-[0_1px_3px_rgba(0,0,0,.9)] ${lowHp ? 'text-red-400 animate-pulse' : 'text-white'}`}>{hud.hp}</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Shield className="w-3.5 h-3.5 text-sky-300 drop-shadow" fill="currentColor" strokeWidth={0} />
+              <div className="flex items-center gap-[2px]">
+                {Array.from({ length: 20 }).map((_, i) => (
+                  <span key={i} className={`h-2.5 w-[3px] rounded-[1px] transition-colors duration-200 ${i < armorSegs ? 'bg-sky-400' : 'bg-white/15'}`} style={i < armorSegs ? { boxShadow: '0 0 6px rgba(56,189,248,.5)' } : undefined} />
+                ))}
               </div>
-              <div className="flex items-center justify-between mt-1.5 mb-1">
-                <span className="text-[10px] font-black text-slate-200 flex items-center gap-1.5">🛡️ الدرع</span>
-                <span className="text-sm font-black font-mono tabular-nums text-sky-300">{hud.armor}</span>
-              </div>
-              <div className="relative w-full h-2 rounded-full bg-black/60 overflow-hidden ring-1 ring-white/10">
-                <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-blue-500 via-sky-400 to-cyan-300 transition-[width] duration-300 ease-out" style={{ width: `${armorPct}%`, boxShadow: '0 0 10px rgba(56,189,248,.5)' }}>
-                  <div className="absolute inset-0 bg-gradient-to-b from-white/40 to-transparent" />
-                </div>
-                <div className="absolute inset-0 flex justify-between px-[3px]">
-                  {[0, 1, 2, 3, 4].map((i) => <span key={i} className="w-px h-full bg-black/35" />)}
-                </div>
-              </div>
+              <span className="w-7 text-left font-mono font-black text-sm tabular-nums text-sky-300 drop-shadow-[0_1px_3px_rgba(0,0,0,.9)]">{hud.armor}</span>
             </div>
             <button onClick={() => engineRef.current?.useMedkit()}
-              className={`flex flex-col items-center justify-center gap-0.5 w-14 rounded-2xl border backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,.08)] transition-all active:scale-90 ${hud.medkits > 0 && hud.hp < 100 ? 'bg-emerald-950/60 border-emerald-400/40 text-emerald-300' : 'bg-black/40 border-white/10 text-slate-500'}`}>
-              <span className="text-xl leading-none">🩹</span>
-              <span className="text-[11px] font-black tabular-nums">×{hud.medkits}</span>
+              className={`self-start flex items-center gap-1 px-2 py-1 rounded-full border backdrop-blur-sm text-[10px] font-black transition-all active:scale-90 pointer-events-auto ${hud.medkits > 0 && hud.hp < 100 ? 'border-emerald-300/30 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/[0.04] text-white/30'}`}>
+              🩹 ×{hud.medkits}
             </button>
           </div>
 
-          {/* Weapon + ammo + grenades */}
-          <div className="flex items-stretch gap-2 pointer-events-auto">
-            <div className="flex-1 bg-black/55 backdrop-blur-xl rounded-2xl border border-white/12 px-3 py-2 flex items-center justify-between shadow-[0_4px_24px_rgba(0,0,0,.45),inset_0_1px_0_rgba(255,255,255,.08)]">
-              <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-white/[0.06] border border-white/10 flex items-center justify-center text-xl shadow-[inset_0_1px_0_rgba(255,255,255,.1)]">{hud.icon}</div>
-                <div>
-                  <div className="text-xs font-black text-white leading-none">{hud.nameAr}</div>
-                  <div className="flex items-center gap-1.5 mt-1">
-                    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded ${activeDef.auto ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30' : 'bg-amber-500/20 text-amber-300 border border-amber-400/30'}`}>
-                      {activeDef.auto ? 'آلي' : 'نصف آلي'}
-                    </span>
-                    <span className={`text-[9px] font-bold ${hud.reloading ? 'text-amber-300' : 'text-slate-400'}`}>{hud.reloading ? 'جارٍ التلقيم…' : 'جاهز'}</span>
-                  </div>
-                </div>
+          {/* Weapon + ammo + grenades + slots — bottom-right (raised above fire on mobile) */}
+          <div className={`absolute ${isMobile ? 'bottom-24 right-4' : 'bottom-3 right-3'} z-20 flex flex-col items-end gap-1.5 pointer-events-none`}>
+            <div className="flex items-center gap-2 pointer-events-auto">
+              <div className="flex flex-col items-end leading-none">
+                <span className="text-[9px] font-black text-white/60 tracking-wide">{hud.nameAr}</span>
+                <span className={`mt-0.5 font-mono font-black text-[26px] leading-none tabular-nums drop-shadow-[0_2px_6px_rgba(0,0,0,.7)] ${hud.ammo === 0 ? 'text-red-400 animate-pulse' : hud.ammo <= Math.ceil(activeDef.magazineSize * 0.25) ? 'text-amber-300' : 'text-white'}`}>
+                  {hud.ammo}<span className="text-sm font-bold text-white/45"> / {hud.reserve}</span>
+                </span>
               </div>
-              <div className="text-left">
-                <div className={`font-mono font-black text-xl leading-none tabular-nums ${hud.ammo === 0 ? 'text-red-500 animate-pulse' : hud.ammo <= Math.ceil(activeDef.magazineSize * 0.25) ? 'text-amber-300' : 'text-white'}`}>
-                  {hud.ammo}<span className="text-xs text-slate-500 font-bold"> / {hud.reserve}</span>
-                </div>
-                {hud.reloading && (
-                  <div className="mt-1.5 w-24 h-1 rounded-full bg-black/60 overflow-hidden">
-                    <div className="h-full bg-gradient-to-r from-amber-400 to-yellow-300 transition-[width] duration-100" style={{ width: `${hud.reloadProgress * 100}%` }} />
-                  </div>
-                )}
-              </div>
+              <div className="w-10 h-10 rounded-xl bg-white/[0.05] border border-white/10 backdrop-blur-sm flex items-center justify-center text-lg shadow-[0_2px_10px_rgba(0,0,0,.3)]">{hud.icon}</div>
             </div>
-            <div className="flex gap-1">
+            {hud.reloading && (
+              <div className="w-28 h-1 rounded-full bg-black/40 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-amber-400 to-yellow-300" style={{ width: `${hud.reloadProgress * 100}%` }} />
+              </div>
+            )}
+            <div className="flex items-center gap-1 pointer-events-auto">
               {(['frag', 'smoke', 'flash'] as GrenadeType[]).map((g) => (
                 <button key={g} onClick={() => engineRef.current?.selectNade(g)}
-                  className={`w-11 rounded-2xl border backdrop-blur-xl py-1.5 flex flex-col items-center gap-0.5 transition-all active:scale-90 ${hud.nadeSlot === g ? 'bg-amber-950/60 border-amber-400/60 shadow-[0_0_14px_rgba(251,191,36,.3)]' : 'bg-black/45 border-white/10 opacity-80'}`}>
-                  <span className="text-base leading-none">{GRENADE_ICON[g]}</span>
-                  <span className={`text-[10px] font-black tabular-nums ${hud.nades[g] > 0 ? (hud.nadeSlot === g ? 'text-amber-300' : 'text-slate-300') : 'text-slate-600'}`}>{hud.nades[g]}</span>
+                  className={`w-9 h-9 rounded-lg border backdrop-blur-sm flex flex-col items-center justify-center transition-all active:scale-90 ${hud.nadeSlot === g ? 'border-amber-300/50 bg-amber-300/10' : 'border-white/10 bg-white/[0.04] opacity-60'}`}>
+                  <span className="text-[13px] leading-none">{GRENADE_ICON[g]}</span>
+                  <span className={`text-[8px] font-black leading-none mt-0.5 ${hud.nades[g] > 0 ? 'text-white/75' : 'text-white/25'}`}>{hud.nades[g]}</span>
                 </button>
               ))}
+              <button onClick={() => engineRef.current?.cookGrenade(false)}
+                onTouchStart={() => engineRef.current?.cookGrenade(true)}
+                onTouchEnd={() => engineRef.current?.cookGrenade(false)}
+                className={`w-9 h-9 rounded-lg border backdrop-blur-sm flex items-center justify-center transition-all active:scale-90 ${cookPreview ? 'border-red-400/60 bg-red-500/10' : 'border-white/10 bg-white/[0.04] opacity-60'}`}>
+                <span className="text-[13px] leading-none">{cookPreview ? '💥' : '🎯'}</span>
+              </button>
+              <div className="w-px h-5 bg-white/10 mx-0.5" />
+              {(['primary', 'secondary', 'sidearm'] as WeaponSlotId[]).map((slot, i) => {
+                const w = pRef.current.weapons[slot];
+                const active = hud.slot === slot;
+                return (
+                  <button key={slot} onClick={() => engineRef.current?.switchSlot(slot)}
+                    className={`relative w-9 h-9 rounded-lg border backdrop-blur-sm flex items-center justify-center transition-all active:scale-90 ${active ? 'border-cyan-300/50 bg-cyan-300/10 shadow-[0_0_10px_rgba(34,211,238,.25)]' : 'border-white/10 bg-white/[0.04] opacity-60'}`}>
+                    <span className="text-[13px] leading-none">{w ? w.def.icon : '➕'}</span>
+                    <span className={`absolute -top-0.5 -left-0.5 w-3 h-3 rounded-full text-[6px] font-black flex items-center justify-center ${active ? 'bg-cyan-400 text-black' : 'bg-white/10 text-white/40'}`}>{i + 1}</span>
+                  </button>
+                );
+              })}
             </div>
-            <button onClick={() => engineRef.current?.cookGrenade(false)}
-              onTouchStart={() => engineRef.current?.cookGrenade(true)}
-              onTouchEnd={() => engineRef.current?.cookGrenade(false)}
-              className={`w-11 rounded-2xl border backdrop-blur-xl py-1.5 flex flex-col items-center gap-0.5 transition-all active:scale-90 ${cookPreview ? 'border-red-400/70 bg-red-950/60' : 'border-white/10 bg-black/45'}`}>
-              <span className="text-base leading-none">🎯</span>
-              <span className={`text-[9px] font-black ${cookPreview ? 'text-red-300 animate-pulse' : 'text-slate-300'}`}>{cookPreview ? '…' : 'رمي'}</span>
-            </button>
-          </div>
-
-          {/* Weapon slots */}
-          <div className="grid grid-cols-3 gap-1.5 pointer-events-auto">
-            {(['primary', 'secondary', 'sidearm'] as WeaponSlotId[]).map((slot, i) => {
-              const w = pRef.current.weapons[slot];
-              const active = hud.slot === slot;
-              return (
-                <button key={slot} onClick={() => engineRef.current?.switchSlot(slot)}
-                  className={`relative rounded-xl border px-2 py-1.5 flex items-center gap-1.5 backdrop-blur-xl transition-all active:scale-[.97] ${active ? 'bg-cyan-950/70 border-cyan-400/70 shadow-[0_0_16px_rgba(34,211,238,.3)]' : 'bg-black/45 border-white/10 opacity-70'}`}>
-                  <span className={`absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full text-[8px] font-black flex items-center justify-center ${active ? 'bg-cyan-400 text-black' : 'bg-white/10 text-slate-400'}`}>{i + 1}</span>
-                  <span className="text-sm">{w ? w.def.icon : '➕'}</span>
-                  <span className="text-[10px] font-bold text-white truncate">{w ? w.def.name : 'فارغ'}</span>
-                  <span className={`ml-auto text-[9px] font-mono tabular-nums ${w && w.ammoInClip === 0 ? 'text-red-400' : 'text-amber-300'}`}>{w ? w.ammoInClip : ''}</span>
-                </button>
-              );
-            })}
           </div>
 
           {isMobile ? (
             <>
-              <div ref={joyBaseRef} className="absolute bottom-32 left-5 w-28 h-28 rounded-full border-2 border-cyan-300/20 bg-white/5 backdrop-blur-sm z-30 pointer-events-auto"
+              {/* Joystick — elegant glass */}
+              <div ref={joyBaseRef} className="absolute bottom-24 left-5 w-24 h-24 rounded-full border border-white/15 bg-white/[0.05] backdrop-blur-sm z-30 pointer-events-auto shadow-[0_8px_24px_rgba(0,0,0,.35)]"
                 onTouchStart={onJoyStart} onTouchMove={onJoyMove} onTouchEnd={onJoyEnd}>
-                <div ref={joystickRef} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-cyan-300/40 border border-cyan-200/50" />
+                <div ref={joystickRef} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-cyan-300/25 border border-cyan-200/40 shadow-[0_0_18px_rgba(34,211,238,.3)]" />
               </div>
-              <div className="absolute right-0 top-24 bottom-52 w-1/2 z-10 touch-none"
+
+              {/* Look zone */}
+              <div className="absolute right-0 top-20 bottom-40 w-1/2 z-10 touch-none"
                 onTouchStart={onLookStart} onTouchMove={onLookMove} onTouchEnd={onLookEnd} />
-              <div className="absolute bottom-40 right-3 flex items-center gap-2 z-30 pointer-events-auto">
-                <button onTouchStart={() => engineRef.current?.jump()} className="w-11 h-11 rounded-full bg-white/10 border border-white/20 text-white text-xs font-bold backdrop-blur-sm active:scale-90">قفز</button>
-                <button onTouchStart={() => engineRef.current?.toggleCrouch()} className={`w-11 h-11 rounded-full border text-xs font-bold backdrop-blur-sm active:scale-90 ${hud.crouched ? 'bg-cyan-500/70 border-cyan-300' : 'bg-white/10 border-white/20 text-white'}`}>انحناء</button>
-                <button onTouchStart={() => engineRef.current?.toggleProne()} className={`w-11 h-11 rounded-full border text-xs font-bold backdrop-blur-sm active:scale-90 ${hud.prone ? 'bg-amber-500/70 border-amber-300' : 'bg-white/10 border-white/20 text-white'}`}>زحف</button>
-                <button onTouchStart={() => engineRef.current?.setAim(!aimRef.current)} className={`w-11 h-11 rounded-full border text-xs font-bold backdrop-blur-sm active:scale-90 ${hud.aiming ? 'bg-purple-500/70 border-purple-300' : 'bg-white/10 border-white/20 text-white'}`}>تصويب</button>
-                <button onTouchStart={() => engineRef.current?.reload()} className={`w-11 h-11 rounded-full border backdrop-blur-sm active:scale-90 ${hud.reloading ? 'bg-amber-500/60 border-amber-300' : 'bg-white/10 border-white/20'}`}>
-                  <RefreshCw className={`w-4 h-4 mx-auto text-white ${hud.reloading ? 'animate-spin' : ''}`} />
-                </button>
-                <button
-                  onTouchStart={() => { if (autoFire) { fireHeldRef.current ? engineRef.current?.stopFire() : engineRef.current?.startFire(); } else engineRef.current?.startFire(); }}
-                  onTouchEnd={() => { if (!autoFire) engineRef.current?.stopFire(); }}
-                  className="w-16 h-16 rounded-full bg-gradient-to-br from-red-600 to-amber-600 border-2 border-red-300/60 text-white text-2xl font-black shadow-[0_0_24px_rgba(239,68,68,.4)] flex items-center justify-center active:scale-90">
-                  🔥
-                </button>
+
+              {/* Action cluster — above the fire button */}
+              <div className="absolute bottom-52 right-4 z-30 flex flex-col items-end gap-1.5 pointer-events-auto">
+                <div className="flex items-center gap-1.5">
+                  <button onTouchStart={() => engineRef.current?.jump()} className="w-10 h-10 rounded-full border border-white/15 bg-white/[0.06] backdrop-blur-sm text-white/90 text-[10px] font-bold active:scale-90 transition-transform">قفز</button>
+                  <button onTouchStart={() => engineRef.current?.toggleCrouch()} className={`w-10 h-10 rounded-full border text-[10px] font-bold backdrop-blur-sm active:scale-90 transition-transform ${hud.crouched ? 'border-cyan-300/60 bg-cyan-400/20 text-cyan-200' : 'border-white/15 bg-white/[0.06] text-white/90'}`}>انحناء</button>
+                  <button onTouchStart={() => engineRef.current?.toggleProne()} className={`w-10 h-10 rounded-full border text-[10px] font-bold backdrop-blur-sm active:scale-90 transition-transform ${hud.prone ? 'border-amber-300/60 bg-amber-400/20 text-amber-200' : 'border-white/15 bg-white/[0.06] text-white/90'}`}>زحف</button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button onTouchStart={() => engineRef.current?.setAim(!aimRef.current)} className={`w-10 h-10 rounded-full border text-[10px] font-bold backdrop-blur-sm active:scale-90 transition-transform ${hud.aiming ? 'border-purple-300/60 bg-purple-400/20 text-purple-200' : 'border-white/15 bg-white/[0.06] text-white/90'}`}>تصويب</button>
+                  <button onTouchStart={() => engineRef.current?.reload()} className={`w-10 h-10 rounded-full border backdrop-blur-sm active:scale-90 transition-transform flex items-center justify-center ${hud.reloading ? 'border-amber-300/60 bg-amber-400/20' : 'border-white/15 bg-white/[0.06]'}`}>
+                    <RefreshCw className={`w-4 h-4 text-white/90 ${hud.reloading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
               </div>
-              {/* Camera height: raise / lower / reset (smooth, user preference) */}
-              <div className="absolute bottom-64 left-5 z-30 flex flex-col gap-1.5 pointer-events-auto">
-                <button onTouchStart={() => engineRef.current?.nudgeCamHeight(1)} aria-label="رفع الكاميرا"
-                  className="w-9 h-9 rounded-full bg-white/10 border border-white/20 text-white text-sm font-bold backdrop-blur-sm active:scale-90 flex items-center justify-center">▲</button>
-                <button onTouchStart={() => engineRef.current?.nudgeCamHeight(-1)} aria-label="خفض الكاميرا"
-                  className="w-9 h-9 rounded-full bg-white/10 border border-white/20 text-white text-sm font-bold backdrop-blur-sm active:scale-90 flex items-center justify-center">▼</button>
-                <button onTouchStart={() => engineRef.current?.resetCamHeight()} aria-label="إعادة ضبط الكاميرا"
-                  className="w-9 h-9 rounded-full bg-white/10 border border-white/20 text-white text-[10px] font-bold backdrop-blur-sm active:scale-90 flex items-center justify-center">⟲</button>
+
+              {/* Fire button — premium ring */}
+              <button
+                onTouchStart={() => { if (autoFire) { fireHeldRef.current ? engineRef.current?.stopFire() : engineRef.current?.startFire(); } else engineRef.current?.startFire(); }}
+                onTouchEnd={() => { if (!autoFire) engineRef.current?.stopFire(); }}
+                className="absolute bottom-5 right-4 z-30 w-16 h-16 rounded-full flex items-center justify-center active:scale-90 transition-transform pointer-events-auto">
+                <span className="absolute inset-0 rounded-full border-2 border-red-300/30 bg-red-500/10 backdrop-blur-sm shadow-[0_0_28px_rgba(239,68,68,.35)]" />
+                <span className="absolute inset-1.5 rounded-full border border-white/10 bg-gradient-to-br from-red-500/40 to-amber-500/15" />
+                <span className="relative text-xl drop-shadow">🔥</span>
+              </button>
+
+              {/* Camera height + view + autofire — tiny controls under the minimap */}
+              <div className="absolute top-20 left-3 z-30 flex flex-col gap-1 pointer-events-auto">
+                <button onTouchStart={() => engineRef.current?.nudgeCamHeight(1)} aria-label="رفع الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[11px] font-bold active:scale-90 flex items-center justify-center">▲</button>
+                <button onTouchStart={() => engineRef.current?.nudgeCamHeight(-1)} aria-label="خفض الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[11px] font-bold active:scale-90 flex items-center justify-center">▼</button>
+                <button onTouchStart={() => engineRef.current?.resetCamHeight()} aria-label="إعادة ضبط الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[9px] font-bold active:scale-90 flex items-center justify-center">⟲</button>
               </div>
-              <div className="absolute bottom-20 left-5 z-30 flex items-center gap-1.5 pointer-events-auto">
-                <button onClick={() => setAutoFire(!autoFire)} className={`px-2 py-1 rounded-full text-[9px] font-bold border ${autoFire ? 'bg-emerald-500/30 border-emerald-400 text-emerald-200' : 'bg-black/40 border-white/15 text-slate-400'}`}>
-                  {autoFire ? 'تلقائي ✓' : 'تلقائي'}
-                </button>
-                <button onClick={() => engineRef.current?.toggleView()} className="px-2 py-1 rounded-full text-[9px] font-bold border bg-black/40 border-white/15 text-slate-300">
-                  {hud.viewMode.toUpperCase()}
-                </button>
+              <div className="absolute top-20 right-3 z-30 flex flex-col gap-1 items-end pointer-events-auto">
+                <button onClick={() => engineRef.current?.toggleView()} className="px-2 py-1 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-[9px] font-black text-white/70 active:scale-90">{hud.viewMode.toUpperCase()}</button>
+                <button onClick={() => setAutoFire(!autoFire)} className={`px-2 py-1 rounded-full border text-[9px] font-black backdrop-blur-sm active:scale-90 ${autoFire ? 'border-emerald-300/40 bg-emerald-500/15 text-emerald-200' : 'border-white/10 bg-black/25 text-white/50'}`}>{autoFire ? 'تلقائي ✓' : 'تلقائي'}</button>
               </div>
             </>
           ) : (
-            <div className="flex items-center justify-center gap-3 text-[10px] text-slate-400 bg-black/40 backdrop-blur-md rounded-xl py-1.5 border border-white/10 pointer-events-auto">
-              <span><b className="text-white">WASD</b> حركة</span>
-              <span><b className="text-white">فأرة</b> تصويب</span>
-              <span><b className="text-white">نقر</b> إطلاق</span>
-              <span><b className="text-white">زر أيمن</b> تقريب</span>
-              <span><b className="text-white">R</b> تلقيم</span>
-              <span><b className="text-white">C/Z</b> انحناء/زحف</span>
-              <span><b className="text-white">G</b> قنبلة</span>
-              <span><b className="text-white">V</b> منظور</span>
-              <span><b className="text-white">مسافة</b> قفز</span>
-              <span><b className="text-white">PgUp/PgDn</b> ارتفاع الكاميرا</span>
-              <span><b className="text-white">Home</b> إعادة الكاميرا</span>
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 pointer-events-none text-[9px] font-bold text-white/30 tracking-wide">
+              WASD حركة · فأرة تصويب · نقر إطلاق · R تلقيم · V منظور · C/Z انحناء/زحف · G قنبلة · مسافة قفز
             </div>
           )}
-        </div>
+        </>
       )}
+
 
       {/* Interact prompt — clear, glassy, and colour-matched to the item */}
       <AnimatePresence>
