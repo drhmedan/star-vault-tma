@@ -7,6 +7,8 @@
 export interface MatchedPlayer {
   id: number;
   name: string;
+  /** 0-based seat in the room, assigned by the server for deterministic spawns. */
+  slot?: number;
 }
 
 export interface MatchRoom {
@@ -24,6 +26,8 @@ export interface MatchInfo {
   hostId: number;
   players: MatchedPlayer[];
   fillBots: number;
+  /** My seat in the room (0-based), used for deterministic spawn placement. */
+  mySlot?: number;
 }
 
 export type MatchmakerEvent =

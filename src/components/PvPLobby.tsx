@@ -52,8 +52,9 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
     start('matchmade', 'SOLO-' + Math.random().toString(36).slice(2, 7).toUpperCase(), stakeStars, {
       myId: user.id,
       hostId: user.id,
-      players: [{ id: user.id, name: user.firstName }],
-      fillBots: TOTAL_FIGHTERS - 1
+      players: [{ id: user.id, name: user.firstName, slot: 0 }],
+      fillBots: TOTAL_FIGHTERS - 1,
+      mySlot: 0
     });
   };
 
@@ -83,7 +84,8 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
             myId: user.id,
             hostId: e.room.host,
             players: e.room.players,
-            fillBots: e.room.fillBots
+            fillBots: e.room.fillBots,
+            mySlot: e.room.players.find((pl) => pl.id === user.id)?.slot ?? 0
           };
           start('matchmade', e.room.roomCode, stakeStars, info);
         } else if (e.type === 'error' || (e.type === 'closed' && e.reason === 'network')) {

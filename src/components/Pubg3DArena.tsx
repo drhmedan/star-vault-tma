@@ -205,6 +205,7 @@ interface HudState {
   crouched: boolean; prone: boolean; sprinting: boolean; locomotion: LocomotionState;
   viewMode: 'tpp' | 'fpp'; countdown: number;
   reloadProgress: number;
+  enemyTags: { id: number; name: string; hp: number; isHuman: boolean; x: number; y: number }[];
 }
 
 interface EngineApi {
@@ -284,7 +285,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     compass: 0, outside: false, reloading: false, aiming: false,
     crouched: false, prone: false, sprinting: false, locomotion: 'idle',
     viewMode: 'fpp', countdown: 3,
-    reloadProgress: 0
+    reloadProgress: 0,
+    enemyTags: []
   });
   const [connStatus, setConnStatus] = useState<ConnectionStatus>('connecting');
   const [opponentName, setOpponentName] = useState<string>(
@@ -392,6 +394,18 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       return new THREE.Vector3(x, getHeightAt(x, z), z);
     };
 
+    // Deterministic spawn ring: every seat maps to the same point on every
+    // client, so both humans in a room see each other (and the bots) at the
+    // exact same world positions without any spawn handshake.
+    const ringSpawn = (slot: number): THREE.Vector3 => {
+      const ang = (slot / 8) * Math.PI * 2 + 0.35;
+      const r = 54;
+      const x = THREE.MathUtils.clamp(Math.cos(ang) * r, -env.bounds + 8, env.bounds - 8);
+      const z = THREE.MathUtils.clamp(Math.sin(ang) * r, -env.bounds + 8, env.bounds - 8);
+      return new THREE.Vector3(x, getHeightAt(x, z), z);
+    };
+    const mySlot = matchInfo ? (matchInfo.players.find((pl) => pl.id === user.id)?.slot ?? 0) : 0;
+
     const enemyUnits: EnemyUnit[] = [];
     const rosterHumans = matchInfo ? matchInfo.players.filter((pl) => pl.id !== user.id) : [];
     const fillBots = matchInfo ? Math.max(0, matchInfo.fillBots) : 0;
@@ -401,11 +415,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     } else if (mode === 'host' || mode === 'join') {
       enemyUnits.push(makeEnemy(0, 'في انتظار الخصم…', true, env.spawnB));
     } else {
-      // Matchmade: one human opponent (if matched) + bot fill up to 8 fighters.
-      const opp = rosterHumans[0];
-      if (opp) {
-        enemyUnits.push(makeEnemy(opp.id, opp.name || 'خصم', true, env.spawnB));
-        spawnIndex = 1;
+      // Matchmade: human opponents at their slot positions + bot fill.
+      for (const opp of rosterHumans) {
+        const oppSlot = typeof opp.slot === 'number' ? opp.slot : mySlot + 1;
+        enemyUnits.push(makeEnemy(opp.id, opp.name || 'خصم', true, ringSpawn(oppSlot)));
+        spawnIndex += 1;
       }
       for (let i = 0; i < fillBots; i++) {
         enemyUnits.push(makeEnemy(-(i + 1), `بوت ${i + 1}`, false, scatterSpawn(spawnIndex + i)));
@@ -419,8 +433,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     scene.add(camera);
 
     const p = pRef.current;
-    p.pos.copy(env.spawnA);
-    p.yaw = Math.PI / 4;
+    p.pos.copy(mode === 'matchmade' ? ringSpawn(mySlot) : env.spawnA);
+    // Face the arena center so both humans start looking toward the action.
+    p.yaw = Math.atan2(-p.pos.x, -p.pos.z);
 
     // ---- pools ----
     const tracerPool: THREE.Line[] = [];
@@ -1022,10 +1037,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         if (peerName) setOpponentName(peerName);
       }
     );
-    if (mode === 'host' || (mode === 'matchmade' && hasHumanOpponent && matchInfo && matchInfo.hostId === user.id)) {
+    if (mode === 'host') {
       multiplayer.createRoom(roomCode, user.firstName);
-    } else if (mode === 'join' || (mode === 'matchmade' && hasHumanOpponent && matchInfo && matchInfo.hostId !== user.id)) {
+    } else if (mode === 'join') {
       multiplayer.joinRoom(roomCode, user.firstName);
+    } else if (mode === 'matchmade' && hasHumanOpponent && matchInfo) {
+      // Full mesh: every human dials the others by deterministic peer ids, so
+      // all shooter state flows peer-to-peer regardless of who hosted.
+      const ids = matchInfo.players.map((pl) => pl.id);
+      if (matchInfo.hostId === user.id) multiplayer.createRoom(roomCode, user.firstName, ids);
+      else multiplayer.joinRoom(roomCode, user.firstName, ids);
     } else if (mode === 'matchmade') {
       multiplayer.startSoloMatch();
     } else {
@@ -1792,7 +1813,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         const opp = enemyUnits.find((u) => u.state.isHuman && u.state.alive);
         endMatch(opp ? p.hp >= opp.state.hp : p.alive && p.kills >= 1);
       }
-      if (hasHumanOpponent && connStatus === 'disconnected' && phase === 'combat' && !gameOverRef.current) endMatch(true);
+      if (hasHumanOpponent && phase === 'combat' && elapsed > 20 && !gameOverRef.current && multiplayer.peerCount === 0) {
+        // Every human opponent dropped (or never connected): take the win
+        // instead of leaving the player stuck in an empty arena.
+        endMatch(true);
+      }
 
       // ---- Player pose ----
       const soldier = playerSoldier;
@@ -2080,6 +2105,24 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         lastHudSync = now;
         const w = currentWeapon();
         const deg = Math.round(((-p.yaw * 180) / Math.PI) % 360);
+
+        // Floating name tags: project enemy heads to screen for a clear,
+        // professional multiplayer read. Humans always show; bots only once
+        // they've been spotted, so the map stays uncluttered.
+        const tags: HudState['enemyTags'] = [];
+        for (const u of enemyUnits) {
+          if (!u.state.alive) continue;
+          if (!u.state.isHuman && !u.state.spotted) continue;
+          u.soldier.root.updateMatrixWorld(true);
+          const wp = u.soldier.head.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.55, 0));
+          const sv = wp.project(camera);
+          if (sv.z > 1 || sv.z < -1) continue;
+          const x = (sv.x * 0.5 + 0.5) * width;
+          const y = (-sv.y * 0.5 + 0.5) * height;
+          if (x < -30 || x > width + 30 || y < -40 || y > height + 40) continue;
+          tags.push({ id: u.state.id, name: u.state.name, hp: Math.max(0, Math.round(u.state.hp)), isHuman: u.state.isHuman, x, y });
+        }
+
         setHud({
           hp: Math.max(0, Math.round(p.hp)), armor: Math.round(p.armor),
           ammo: w ? w.ammoInClip : 0, reserve: w ? w.reserveAmmo : 0,
@@ -2091,7 +2134,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           locomotion: p.climbing ? 'climb' : sliding ? 'slide' : p.prone ? 'prone' : p.crouched ? 'crouch' : p.sprinting ? 'sprint' : moving ? 'walk' : 'idle',
           viewMode,
           countdown: Math.max(1, countNum),
-          reloadProgress: p.reloading && w ? THREE.MathUtils.clamp(1 - (p.reloadUntil - now) / w.def.reloadTimeMs, 0, 1) : 0
+          reloadProgress: p.reloading && w ? THREE.MathUtils.clamp(1 - (p.reloadUntil - now) / w.def.reloadTimeMs, 0, 1) : 0,
+          enemyTags: tags
         });
       }
 
@@ -2300,6 +2344,20 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         <div key={n.id} className={`absolute z-30 pointer-events-none font-mono font-black text-sm drop-shadow-lg ${n.headshot ? 'text-amber-300' : 'text-red-400'}`}
           style={{ left: n.x, top: n.y, animation: 'floatUp 0.9s ease-out forwards' }}>
           {n.text}
+        </div>
+      ))}
+
+      {/* ===================== ENEMY NAME TAGS ===================== */}
+      {hud.enemyTags.map((t) => (
+        <div key={t.id} className="absolute z-20 pointer-events-none flex flex-col items-center"
+          style={{ left: t.x, top: t.y, transform: 'translate(-50%,-100%)' }}>
+          <span className={`text-[10px] font-black leading-none whitespace-nowrap drop-shadow-[0_1px_3px_rgba(0,0,0,.9)] ${t.isHuman ? 'text-rose-300' : 'text-red-300/90'}`}>
+            {t.name}
+          </span>
+          <div className={`mt-1 h-[3px] rounded-full overflow-hidden ${t.isHuman ? 'w-10' : 'w-7'} bg-black/50`}>
+            <div className="h-full rounded-full transition-all duration-200"
+              style={{ width: `${t.hp}%`, background: t.hp > 50 ? '#22d3ee' : t.hp > 25 ? '#f59e0b' : '#ef4444' }} />
+          </div>
         </div>
       ))}
 

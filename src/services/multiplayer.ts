@@ -4,19 +4,51 @@ import { config } from '../config';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' }
+];
+
+const DIAL_ATTEMPTS = 20;       // ~30s of retry dialing while peers come online
+const DIAL_INTERVAL_MS = 1500;
+
+// ============================================================
+// MultiplayerService — P2P WebRTC mesh via self-hosted PeerJS.
+//
+// Two connection topologies are supported:
+//
+//   • Mesh (matchmade rooms): every player derives a deterministic peer id
+//     from the room code + their player id, so all clients can find each
+//     other through the shared signaling server. To guarantee exactly one
+//     DataChannel per pair (no duplicate channels), the peer with the LOWER
+//     player id always dials the HIGHER one. Result: full mesh, no relay,
+//     no duplicates — reliable for the 2–4 human fighters we target on
+//     mobile, and still correct up to 8.
+//
+//   • Star (private rooms / deep links): the host listens on sv-host-<code>
+//     and the joiner dials it — a single 1v1 channel.
+//
+// Gameplay traffic (movement, shots, hits, loot, game-over) never touches
+// the server; it flows peer-to-peer. The server only matches players and
+// relays the WebRTC handshake.
+// ============================================================
 export class MultiplayerService {
   private peer: Peer | null = null;
-  private conn: DataConnection | null = null;
+  /** Open data channels keyed by the learned senderId of the remote peer. */
+  private connections = new Map<number, DataConnection>();
+  /** Dialing attempts in flight, keyed by the target peer id string. */
+  private dialing = new Map<string, DataConnection>();
   private broadcastChannel: BroadcastChannel | null = null;
   private onMessageCallback: ((msg: MultiplayerMessage) => void) | null = null;
   private onStatusChangeCallback: ((status: ConnectionStatus, peerName?: string) => void) | null = null;
-  
-  public isHost: boolean = false;
-  public roomCode: string = '';
+  private myName = '';
+
+  public isHost = false;
+  public roomCode = '';
   public status: ConnectionStatus = 'disconnected';
-  public isAiMode: boolean = false;
-  public myPlayerId: number = 0;
-  /** Player id of the connected opponent (learned from their messages). */
+  public isAiMode = false;
+  public myPlayerId = 0;
+  /** Player id of the first connected peer (kept for legacy callers). */
   public opponentId: number | null = null;
 
   constructor() {}
@@ -31,6 +63,16 @@ export class MultiplayerService {
     this.onStatusChangeCallback = onStatusChange;
   }
 
+  /** Number of live human peer channels (bots are local and don't count). */
+  public get peerCount(): number {
+    return this.connections.size;
+  }
+
+  /** Player ids currently connected over live data channels. */
+  public get connectedPeerIds(): number[] {
+    return Array.from(this.connections.keys());
+  }
+
   /** PeerJS connection options: self-hosted signaling when configured. */
   private peerOptions(): Record<string, unknown> {
     const signal = config.peerSignal;
@@ -39,109 +81,136 @@ export class MultiplayerService {
       : {};
   }
 
-  // 1. Create a Host Room
-  public createRoom(roomCode: string, playerName: string) {
-    this.cleanup();
-    this.roomCode = roomCode.toUpperCase().trim();
-    this.isHost = true;
-    this.isAiMode = false;
-    this.updateStatus('connecting');
+  /** Deterministic peer id for a mesh participant. */
+  private meshId(roomCode: string, playerId: number): string {
+    return `sv-mesh-${roomCode.toLowerCase()}-${playerId}`;
+  }
 
-    // BroadcastChannel for instant local multi-tab testing
+  private makePeer(id: string): Peer {
+    return new Peer(id, {
+      debug: 1,
+      ...this.peerOptions(),
+      config: { iceServers: ICE_SERVERS }
+    });
+  }
+
+  private openBroadcastChannel() {
     try {
       this.broadcastChannel = new BroadcastChannel(`sv-room-${this.roomCode}`);
       this.broadcastChannel.onmessage = (event) => {
-        if (event.data && event.data.senderId !== this.myPlayerId) {
-          this.handleIncomingMessage(event.data);
+        const msg = event.data as MultiplayerMessage | undefined;
+        if (msg && msg.senderId !== this.myPlayerId) {
+          this.deliver(msg, null);
         }
       };
     } catch (e) {
       console.warn('BroadcastChannel not supported in this env', e);
     }
+  }
 
-    // Initialize WebRTC Host Peer
-    const peerId = `sv-host-${this.roomCode.toLowerCase()}`;
-    try {
-      this.peer = new Peer(peerId, {
-        debug: 1,
-        ...this.peerOptions(),
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-          ]
-        }
-      });
+  private attachPeerHandlers() {
+    if (!this.peer) return;
+    this.peer.on('open', () => {
+      // Still connecting until the first human channel is live.
+      if (this.connections.size === 0) this.updateStatus('connecting');
+    });
+    this.peer.on('connection', (incoming) => this.registerConnection(incoming));
+    this.peer.on('error', (err) => {
+      console.warn('Peer error:', err);
+    });
+  }
 
-      this.peer.on('open', (id) => {
-        console.log('Host peer opened with id:', id);
-        this.updateStatus('connecting');
+  /** Wire a single DataChannel (incoming or dialed) to the message bus. */
+  private registerConnection(conn: DataConnection) {
+    conn.on('open', () => {
+      // Handshake carries our identity so the remote can key the channel.
+      this.sendOn(conn, {
+        type: 'JOIN_ROOM',
+        senderId: this.myPlayerId,
+        payload: { playerName: this.myName, roomCode: this.roomCode },
+        timestamp: Date.now()
       });
+      this.updateStatus('connected', 'لاعب حقيقي متصل');
+    });
+    conn.on('data', (data) => this.deliver(data as MultiplayerMessage, conn));
+    conn.on('close', () => this.dropConnection(conn));
+    conn.on('error', () => this.dropConnection(conn));
+  }
 
-      this.peer.on('connection', (incomingConn) => {
-        console.log('Opponent connected to host!');
-        this.conn = incomingConn;
-        this.setupConnectionHandlers();
-      });
-
-      this.peer.on('error', (err) => {
-        console.warn('Peer error (falling back to local relay):', err);
-      });
-    } catch (err) {
-      console.error('Failed to init PeerJS:', err);
+  private deliver(msg: MultiplayerMessage, from: DataConnection | null) {
+    if (!msg || typeof msg !== 'object') return;
+    if (typeof msg.senderId === 'number' && msg.senderId !== this.myPlayerId) {
+      if (from) this.connections.set(msg.senderId, from);
+      if (this.opponentId === null) this.opponentId = msg.senderId;
+      if (this.status !== 'connected') this.updateStatus('connected', 'لاعب حقيقي متصل');
+      if (this.onMessageCallback) this.onMessageCallback(msg);
     }
   }
 
-  // 2. Join an Existing Room
-  public joinRoom(roomCode: string, playerName: string) {
-    this.cleanup();
-    this.roomCode = roomCode.toUpperCase().trim();
-    this.isHost = false;
-    this.isAiMode = false;
-    this.updateStatus('connecting');
-
-    // BroadcastChannel for instant local multi-tab testing
-    try {
-      this.broadcastChannel = new BroadcastChannel(`sv-room-${this.roomCode}`);
-      this.broadcastChannel.onmessage = (event) => {
-        if (event.data && event.data.senderId !== this.myPlayerId) {
-          this.handleIncomingMessage(event.data);
-        }
-      };
-    } catch (e) {
-      console.warn('BroadcastChannel not supported', e);
+  private dropConnection(conn: DataConnection) {
+    for (const [id, c] of this.connections) {
+      if (c === conn) this.connections.delete(id);
     }
+    for (const [peerId, c] of this.dialing) {
+      if (c === conn) this.dialing.delete(peerId);
+    }
+    if (this.connections.size === 0 && this.status !== 'disconnected') {
+      this.updateStatus('disconnected');
+    }
+  }
 
-    const hostPeerId = `sv-host-${this.roomCode.toLowerCase()}`;
-    const myClientPeerId = `sv-client-${this.roomCode.toLowerCase()}-${Date.now().toString().slice(-4)}`;
+  /** Dial a target peer id, retrying until the channel opens or cleanup. */
+  private dial(targetPeerId: string, remaining: number) {
+    if (!this.peer || this.peer.destroyed) return;
+    if (this.dialing.has(targetPeerId)) return;
+    const conn = this.peer.connect(targetPeerId, { reliable: true });
+    this.dialing.set(targetPeerId, conn);
+    this.registerConnection(conn);
+    const guard = window.setTimeout(() => {
+      this.dialing.delete(targetPeerId);
+      if (!conn.open && remaining > 0 && this.peer && !this.peer.destroyed) {
+        try { conn.close(); } catch { /* already closed */ }
+        this.dial(targetPeerId, remaining - 1);
+      }
+    }, DIAL_INTERVAL_MS);
+    conn.on('open', () => window.clearTimeout(guard));
+  }
 
+  private startMesh(roomCode: string, playerIds: number[]) {
+    // Mesh rule: the peer with the LOWER id dials the HIGHER id. This yields
+    // exactly one channel per pair with no duplicates and no relay.
+    const myPeerId = this.meshId(roomCode, this.myPlayerId);
     try {
-      this.peer = new Peer(myClientPeerId, {
-        debug: 1,
-        ...this.peerOptions(),
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-          ]
-        }
-      });
-
+      this.peer = this.makePeer(myPeerId);
+      this.attachPeerHandlers();
       this.peer.on('open', () => {
-        console.log('Client peer opened, connecting to host:', hostPeerId);
-        this.tryConnectToHost(hostPeerId, 12);
-      });
-
-      this.peer.on('error', (err) => {
-        console.warn('Peer client connection error:', err);
+        for (const pid of playerIds) {
+          if (pid !== this.myPlayerId && pid > this.myPlayerId) {
+            this.dial(this.meshId(roomCode, pid), DIAL_ATTEMPTS);
+          }
+        }
       });
     } catch (err) {
-      console.error('Failed to init PeerJS client:', err);
+      console.error('Failed to init mesh PeerJS:', err);
     }
+  }
 
-    // Ping host over broadcast channel immediately
-    setTimeout(() => {
-      this.sendMessage({
+  private startStar(roomCode: string, playerName: string) {
+    const hostPeerId = `sv-host-${roomCode.toLowerCase()}`;
+    try {
+      this.peer = this.isHost
+        ? this.makePeer(hostPeerId)
+        : this.makePeer(`sv-client-${roomCode.toLowerCase()}-${Date.now().toString().slice(-4)}`);
+      this.attachPeerHandlers();
+      if (!this.isHost) {
+        this.peer.on('open', () => this.dial(hostPeerId, DIAL_ATTEMPTS));
+      }
+    } catch (err) {
+      console.error('Failed to init PeerJS:', err);
+    }
+    // Ping the host over the broadcast channel immediately (local tabs / backup).
+    window.setTimeout(() => {
+      this.broadcastChannel?.postMessage({
         type: 'JOIN_ROOM',
         senderId: this.myPlayerId,
         payload: { playerName, roomCode: this.roomCode },
@@ -150,21 +219,30 @@ export class MultiplayerService {
     }, 400);
   }
 
-  // Keep dialing the host until the DataChannel opens (the host's peer may
-  // still be initialising when the joiner arrives, so a single attempt would
-  // race and fail).
-  private tryConnectToHost(hostPeerId: string, remaining: number) {
-    if (!this.peer || this.peer.destroyed || this.status === 'connected') return;
-    const connection = this.peer.connect(hostPeerId, { reliable: true });
-    this.conn = connection;
-    this.setupConnectionHandlers();
-    const guard = window.setTimeout(() => {
-      if (!connection.open && this.conn === connection && remaining > 0) {
-        try { connection.close(); } catch { /* already closed */ }
-        this.tryConnectToHost(hostPeerId, remaining - 1);
-      }
-    }, 1500);
-    connection.on('open', () => window.clearTimeout(guard));
+  // 1. Create a room (host). With playerIds -> full mesh; without -> 1v1 star.
+  public createRoom(roomCode: string, playerName: string, playerIds?: number[]) {
+    this.cleanup();
+    this.roomCode = roomCode.toUpperCase().trim();
+    this.isHost = true;
+    this.isAiMode = false;
+    this.myName = playerName;
+    this.updateStatus('connecting');
+    this.openBroadcastChannel();
+    if (playerIds && playerIds.length > 1) this.startMesh(this.roomCode, playerIds);
+    else this.startStar(this.roomCode, playerName);
+  }
+
+  // 2. Join an existing room (client). With playerIds -> full mesh.
+  public joinRoom(roomCode: string, playerName: string, playerIds?: number[]) {
+    this.cleanup();
+    this.roomCode = roomCode.toUpperCase().trim();
+    this.isHost = false;
+    this.isAiMode = false;
+    this.myName = playerName;
+    this.updateStatus('connecting');
+    this.openBroadcastChannel();
+    if (playerIds && playerIds.length > 1) this.startMesh(this.roomCode, playerIds);
+    else this.startStar(this.roomCode, playerName);
   }
 
   // 3. Start AI Training Match
@@ -185,63 +263,16 @@ export class MultiplayerService {
     this.updateStatus('connected', 'معركة البوتات');
   }
 
-  private setupConnectionHandlers() {
-    if (!this.conn) return;
-
-    this.conn.on('open', () => {
-      console.log('WebRTC connection established!');
-      this.updateStatus('connected', 'لاعب متصل أونلاين');
-      // Send handshake
-      this.sendMessage({
-        type: 'JOIN_ROOM',
-        senderId: this.myPlayerId,
-        payload: { roomCode: this.roomCode },
-        timestamp: Date.now()
-      });
-    });
-
-    this.conn.on('data', (data) => {
-      this.handleIncomingMessage(data as MultiplayerMessage);
-    });
-
-    this.conn.on('close', () => {
-      this.updateStatus('disconnected');
-    });
-
-    this.conn.on('error', () => {
-      this.updateStatus('error');
-    });
-  }
-
-  private handleIncomingMessage(msg: MultiplayerMessage) {
-    if (typeof msg?.senderId === 'number') {
-      this.opponentId = msg.senderId;
-    }
-    if (this.status !== 'connected') {
-      this.updateStatus('connected', 'لاعب حقيقي متصل');
-    }
-    if (this.onMessageCallback) {
-      this.onMessageCallback(msg);
+  private sendOn(conn: DataConnection | null | undefined, msg: MultiplayerMessage) {
+    if (conn && conn.open) {
+      try { conn.send(msg); } catch { /* drop silent */ }
     }
   }
 
   public sendMessage(msg: MultiplayerMessage) {
-    // 1. Send via WebRTC DataChannel if active
-    if (this.conn && this.conn.open) {
-      try {
-        this.conn.send(msg);
-      } catch (e) {
-        console.warn('Failed to send via WebRTC:', e);
-      }
-    }
-
-    // 2. Send via BroadcastChannel (local tabs / backup)
+    for (const conn of this.connections.values()) this.sendOn(conn, msg);
     if (this.broadcastChannel) {
-      try {
-        this.broadcastChannel.postMessage(msg);
-      } catch (e) {
-        console.warn('Failed to send via BroadcastChannel:', e);
-      }
+      try { this.broadcastChannel.postMessage(msg); } catch { /* drop silent */ }
     }
   }
 
@@ -290,19 +321,20 @@ export class MultiplayerService {
     });
   }
 
-  // Shooter Real-Time Sync Methods
-  public sendShooterState(state: any) {
+  // ---- Shooter real-time sync (broadcast to every human peer) ----
+
+  public sendShooterState(state: Record<string, number | boolean | string>) {
     this.sendMessage({
-      type: 'SYNC_SHOOTER_STATE' as any,
+      type: 'SYNC_SHOOTER_STATE',
       senderId: this.myPlayerId,
       payload: state,
       timestamp: Date.now()
     });
   }
 
-  public sendShootBullets(bullets: any[]) {
+  public sendShootBullets(bullets: unknown[]) {
     this.sendMessage({
-      type: 'SHOOT_BULLETS' as any,
+      type: 'SHOOT_BULLETS',
       senderId: this.myPlayerId,
       payload: { bullets },
       timestamp: Date.now()
@@ -311,7 +343,7 @@ export class MultiplayerService {
 
   public sendBulletHit(victimId: number, damage: number, weaponType: string) {
     this.sendMessage({
-      type: 'BULLET_HIT' as any,
+      type: 'BULLET_HIT',
       senderId: this.myPlayerId,
       payload: { victimId, damage, weaponType },
       timestamp: Date.now()
@@ -320,13 +352,12 @@ export class MultiplayerService {
 
   public sendLootTaken(lootId: string) {
     this.sendMessage({
-      type: 'LOOT_TAKEN' as any,
+      type: 'LOOT_TAKEN',
       senderId: this.myPlayerId,
       payload: { lootId },
       timestamp: Date.now()
     });
   }
-
 
   private updateStatus(status: ConnectionStatus, peerName?: string) {
     this.status = status;
@@ -336,21 +367,26 @@ export class MultiplayerService {
   }
 
   public cleanup() {
-    if (this.conn) {
-      try { this.conn.close(); } catch (_) {}
-      this.conn = null;
+    for (const conn of this.connections.values()) {
+      try { conn.close(); } catch { /* already closed */ }
     }
+    for (const conn of this.dialing.values()) {
+      try { conn.close(); } catch { /* already closed */ }
+    }
+    this.connections.clear();
+    this.dialing.clear();
     if (this.peer) {
-      try { this.peer.destroy(); } catch (_) {}
+      try { this.peer.destroy(); } catch { /* already destroyed */ }
       this.peer = null;
     }
     if (this.broadcastChannel) {
-      try { this.broadcastChannel.close(); } catch (_) {}
+      try { this.broadcastChannel.close(); } catch { /* already closed */ }
       this.broadcastChannel = null;
     }
     this.status = 'disconnected';
     this.isAiMode = false;
     this.opponentId = null;
+    this.myName = '';
   }
 }
 

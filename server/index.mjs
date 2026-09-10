@@ -85,7 +85,9 @@ function leaveQueue(ws) {
 function formRoom(members, mode) {
   const cfg = MODES[mode];
   const roomCode = 'ROOM-' + randomBytes(3).toString('hex').toUpperCase();
-  const players = members.map((m) => ({ id: m.id, name: m.name }));
+  // Seats are assigned in join order so every client derives identical,
+  // deterministic spawn points for the whole roster (mesh spawn symmetry).
+  const players = members.map((m, i) => ({ id: m.id, name: m.name, slot: i }));
   const fillBots = cfg.allowBotFill ? Math.max(0, cfg.totalFighters - players.length) : 0;
   log(`room ${roomCode} formed (mode=${mode}, real=${players.length}, bots=${fillBots})`);
   for (const m of members) {
