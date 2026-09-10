@@ -36,6 +36,18 @@ export interface CancelReceipt {
   refunded: boolean;
 }
 
+export interface PurchaseReceipt {
+  balance: number;
+  spent: number;
+  verified: boolean;
+}
+
+export interface GrantReceipt {
+  balance: number;
+  stars: number;
+  verified: boolean;
+}
+
 export interface MatchCompletion {
   won: boolean;
   kills: number;
@@ -45,6 +57,8 @@ export interface MatchCompletion {
   mode: MatchMode;
   stake: number;
   matchId: string;
+  /** Experience earned — feeds the seasonal battle pass. */
+  xp: number;
 }
 
 /** The deltas actually applied for a match — returned to the arena so its
@@ -122,5 +136,13 @@ export const ledger = {
 
   cancelEscrow(escrowId: string, playerId: number): Promise<CancelReceipt> {
     return post<CancelReceipt>('/ledger/escrow/cancel', { escrowId, playerId });
+  },
+
+  purchase(purchaseId: string, playerId: number, productId: string, amount: number): Promise<PurchaseReceipt> {
+    return post<PurchaseReceipt>('/ledger/purchase', { purchaseId, playerId, productId, amount });
+  },
+
+  grant(grantId: string, playerId: number, stars: number): Promise<GrantReceipt> {
+    return post<GrantReceipt>('/ledger/grant', { grantId, playerId, stars });
   }
 };

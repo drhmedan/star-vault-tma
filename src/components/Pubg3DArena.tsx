@@ -569,7 +569,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       // The end screen always shows the real applied numbers.
       onMatchComplete({
         won, kills: p.kills, damage: Math.round(p.damageDealt), accuracy: acc,
-        durationSec: Math.round(dur), mode, stake: stakeStars, matchId
+        durationSec: Math.round(dur), mode, stake: stakeStars, matchId, xp
       })
         .then((final) => {
           setStats((s) => s ? { ...s, stars: final.stars, verified: final.verified } : s);

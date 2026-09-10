@@ -58,6 +58,13 @@ export interface UserProfile {
     armorItemId?: string;
     droneItemId?: string;
   };
+  battlePass?: {
+    season: number;
+    xp: number;
+    premium: boolean;
+    claimedFree: number[];
+    claimedPremium: number[];
+  };
 }
 
 export interface BattleRoom {

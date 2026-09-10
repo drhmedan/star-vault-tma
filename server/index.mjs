@@ -192,6 +192,30 @@ app.post('/ledger/escrow/cancel', (req, res) => {
   }
 });
 
+// Debit stars for a store purchase (e.g. the battle pass premium unlock).
+// Idempotent by purchaseId so a retried request never charges twice.
+app.post('/ledger/purchase', (req, res) => {
+  const b = req.body || {};
+  try {
+    const result = ledger.purchase({ purchaseId: b.purchaseId, playerId: b.playerId, productId: b.productId, amount: b.amount });
+    res.json(result);
+  } catch (err) {
+    ledgerErrorResponse(res, err);
+  }
+});
+
+// Credit stars for a claimed grant (e.g. a battle pass star reward).
+// Idempotent by grantId and bounded by the daily star cap.
+app.post('/ledger/grant', (req, res) => {
+  const b = req.body || {};
+  try {
+    const result = ledger.grant({ grantId: b.grantId, playerId: b.playerId, stars: b.stars });
+    res.json(result);
+  } catch (err) {
+    ledgerErrorResponse(res, err);
+  }
+});
+
 // ---- PeerJS signaling (WebRTC handshake only) ----
 // Mounted at the root so the client's default path "/" resolves to the
 // "/peerjs" WebSocket endpoint and "/peerjs/id" HTTP id endpoint.

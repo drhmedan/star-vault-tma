@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Package, Star, Swords, Disc, Users, ShoppingBag, 
-  Sparkles, CheckCircle, Volume2, VolumeX, Backpack, Shield, Crosshair
+  Sparkles, CheckCircle, Volume2, VolumeX, Backpack, Shield, Crosshair, Crown
 } from 'lucide-react';
 import { UserProfile, VaultCase, VaultItem, WheelSegment } from './types';
 import { VAULT_CASES, ALL_ITEMS } from './data/vaultsData';
@@ -16,13 +16,15 @@ import { Inventory } from './components/Inventory';
 import { PvPLobby } from './components/PvPLobby';
 import { Pubg3DArena } from './components/Pubg3DArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
+import { BattlePass } from './components/BattlePass';
 import { MapId } from './game3d/types3d';
 import { MatchInfo } from './services/matchmaking';
 import { config } from './config';
 import { ledger, LedgerError, MatchCompletion, SettleOutcome } from './services/ledger';
+import { BATTLE_PASS, normalizeBattlePass } from './data/battlePass';
 import { sound } from './audio/soundEngine';
 
-type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals';
+type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals' | 'battlepass';
 
 export const App: React.FC = () => {
   const [tab, setTab] = useState<TabType>('cyberwar');
@@ -238,7 +240,16 @@ export const App: React.FC = () => {
     }
   };
 
+  // Battle-pass XP accrues from every finished match (soft progression).
+  const creditBattlePassXp = (xp: number) => {
+    setUser(p => {
+      const base = normalizeBattlePass(p.battlePass);
+      return { ...p, battlePass: { ...base, xp: Math.min(BATTLE_PASS.maxLevel * BATTLE_PASS.xpPerLevel, base.xp + xp) } };
+    });
+  };
+
   const handleMatchComplete = async (result: MatchCompletion): Promise<SettleOutcome> => {
+    creditBattlePassXp(Math.max(0, Math.round(result.xp || 0)));
     const localTrophies = result.won ? 25 : -15;
     const localDust = result.won ? 200 : 30;
     const localStars = result.won && result.stake > 0 ? Math.floor(result.stake * 1.8) : 0;
@@ -384,6 +395,15 @@ export const App: React.FC = () => {
           />
         )}
 
+        {/* TAB 8: BATTLE PASS */}
+        {tab === 'battlepass' && (
+          <BattlePass
+            user={user}
+            onUserChange={setUser}
+            onOpenShop={() => setTab('shop')}
+          />
+        )}
+
         {/* TAB 7: REFERRAL */}
         {tab === 'referrals' && (
           <ReferralHub 
@@ -422,6 +442,7 @@ export const App: React.FC = () => {
             { id: 'loadout', label: 'العتاد', icon: Shield },
             { id: 'vaults', label: 'الصناديق', icon: Package },
             { id: 'wheel', label: 'العجلة', icon: Disc },
+            { id: 'battlepass', label: 'الممر', icon: Crown },
             { id: 'inventory', label: 'حقيبتي', icon: Backpack },
             { id: 'shop', label: 'النجوم', icon: Star },
             { id: 'referrals', label: 'الإحالات', icon: Users }
