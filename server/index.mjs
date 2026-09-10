@@ -29,11 +29,27 @@ import express from 'express';
 import { ExpressPeerServer } from 'peer';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createLedger } from './ledger.mjs';
+import { verifyTelegramInitData } from './telegramAuth.mjs';
 
 const PORT = Number(process.env.PORT || 8000);
 const HOST = '0.0.0.0';
 
 const ledger = createLedger();
+
+// ---- Telegram identity verification -----------------------------------
+// When BOT_TOKEN is set (production), every /ledger/* request must carry a
+// valid, fresh Telegram initData signature; the verified user id becomes the
+// authoritative player id, so a client can no longer move stars for someone
+// else's account. Without a token the ledger runs in dev mode (no identity
+// check) so local testing keeps working.
+const BOT_TOKEN = (process.env.BOT_TOKEN || '').trim();
+const INITDATA_MAX_AGE_MS = Number(process.env.INITDATA_MAX_AGE_MS || 24 * 60 * 60 * 1000);
+// Money-in (stars top-ups) must originate from the Telegram payment webhook in
+// production — a verified client is never allowed to credit its own account.
+const ALLOW_CLIENT_TOPUP = process.env.ALLOW_CLIENT_TOPUP === '1';
+if (!BOT_TOKEN) {
+  console.warn('[auth] BOT_TOKEN is not set — the ledger is running WITHOUT Telegram identity verification (dev mode only).');
+}
 
 // ---- Matchmaking configuration (env-overridable for tests) ----
 // quick  = 1v1 + bot fill (the instant "always alive" default: nobody waits).
@@ -212,10 +228,45 @@ function ledgerErrorResponse(res, err) {
   return res.status(500).json({ error: 'خطأ داخلي في سجل الحسابات' });
 }
 
+// ---- Telegram identity gate for the whole ledger ----------------------
+// In production (BOT_TOKEN set) every /ledger request must carry a valid
+// initData signature; the middleware verifies it and stamps the verified
+// Telegram user onto the request. Dev mode (no token) skips verification.
+app.use('/ledger', (req, res, next) => {
+  if (!BOT_TOKEN) return next();
+  const initData = (req.get('x-telegram-init-data') || '').trim();
+  const result = verifyTelegramInitData(initData, BOT_TOKEN, { maxAgeMs: INITDATA_MAX_AGE_MS });
+  if (!result.ok) {
+    return res.status(401).json({ error: result.error, code: result.code || 'unauthorized' });
+  }
+  req.telegramUser = result.user;
+  req.telegramUserId = result.userId;
+  next();
+});
+
+// Returns the authoritative player id for a write request. With a verified
+// Telegram session the id comes from the signature (a body id that disagrees
+// is rejected); in dev mode the body id is trusted as before. Returns null
+// after sending a 403 so callers can bail out.
+function requirePlayerId(req, res) {
+  const claimed = req.body ? Number(req.body.playerId) : NaN;
+  if (req.telegramUserId) {
+    if (Number.isFinite(claimed) && claimed !== req.telegramUserId) {
+      res.status(403).json({ error: 'هوية اللاعب لا تطابق جلسة تيليجرام', code: 'forbidden' });
+      return null;
+    }
+    return req.telegramUserId;
+  }
+  return Number.isFinite(claimed) ? claimed : NaN;
+}
+
 // Read a player's authoritative balance (does not persist unknown players).
 app.get('/ledger/player/:id', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'معرّف لاعب غير صالح' });
+  if (req.telegramUserId && id !== req.telegramUserId) {
+    return res.status(403).json({ error: 'لا يمكنك عرض حساب لاعب آخر', code: 'forbidden' });
+  }
   try {
     res.json(ledger.playerView(id));
   } catch (err) {
@@ -226,8 +277,10 @@ app.get('/ledger/player/:id', (req, res) => {
 // Escrow a stake before a staked match starts.
 app.post('/ledger/stake', (req, res) => {
   const b = req.body || {};
+  const playerId = requirePlayerId(req, res);
+  if (playerId === null) return;
   try {
-    const receipt = ledger.stake({ playerId: b.playerId, amount: b.amount, roomCode: b.roomCode });
+    const receipt = ledger.stake({ playerId, amount: b.amount, roomCode: b.roomCode });
     res.json(receipt);
   } catch (err) {
     ledgerErrorResponse(res, err);
@@ -237,9 +290,11 @@ app.post('/ledger/stake', (req, res) => {
 // Settle a finished match: computes and pays the authoritative rewards.
 app.post('/ledger/settle', (req, res) => {
   const b = req.body || {};
+  const playerId = requirePlayerId(req, res);
+  if (playerId === null) return;
   try {
     const settlement = ledger.settle({
-      matchId: b.matchId, playerId: b.playerId, escrowId: b.escrowId,
+      matchId: b.matchId, playerId, escrowId: b.escrowId,
       won: b.won, kills: b.kills, damage: b.damage, accuracy: b.accuracy,
       durationSec: b.durationSec, mode: b.mode, name: b.name,
       ranked: b.ranked === true
@@ -263,8 +318,10 @@ app.get('/ledger/leaderboard', (req, res) => {
 // Refund an open escrow (match aborted / server unreachable at settle time).
 app.post('/ledger/escrow/cancel', (req, res) => {
   const b = req.body || {};
+  const playerId = requirePlayerId(req, res);
+  if (playerId === null) return;
   try {
-    const result = ledger.cancelEscrow(b.escrowId, b.playerId);
+    const result = ledger.cancelEscrow(b.escrowId, playerId);
     res.json(result);
   } catch (err) {
     ledgerErrorResponse(res, err);
@@ -275,8 +332,10 @@ app.post('/ledger/escrow/cancel', (req, res) => {
 // Idempotent by purchaseId so a retried request never charges twice.
 app.post('/ledger/purchase', (req, res) => {
   const b = req.body || {};
+  const playerId = requirePlayerId(req, res);
+  if (playerId === null) return;
   try {
-    const result = ledger.purchase({ purchaseId: b.purchaseId, playerId: b.playerId, productId: b.productId, amount: b.amount, vip: b.vip === true });
+    const result = ledger.purchase({ purchaseId: b.purchaseId, playerId, productId: b.productId, amount: b.amount, vip: b.vip === true });
     res.json(result);
   } catch (err) {
     ledgerErrorResponse(res, err);
@@ -285,11 +344,18 @@ app.post('/ledger/purchase', (req, res) => {
 
 // Credit stars for a real-money top-up (stars package purchase). Money-in is
 // not a reward, so it is NOT bounded by the daily reward cap — but it is
-// still idempotent by topupId.
+// still idempotent by topupId. In production this endpoint is reserved for
+// the Telegram payment webhook: verified clients cannot credit themselves
+// unless ALLOW_CLIENT_TOPUP=1 (dev convenience only).
 app.post('/ledger/topup', (req, res) => {
+  if (BOT_TOKEN && !ALLOW_CLIENT_TOPUP) {
+    return res.status(403).json({ error: 'إضافة النجوم تتم عبر بوابة الدفع فقط', code: 'forbidden' });
+  }
   const b = req.body || {};
+  const playerId = requirePlayerId(req, res);
+  if (playerId === null) return;
   try {
-    const result = ledger.topup({ topupId: b.topupId, playerId: b.playerId, amount: b.amount });
+    const result = ledger.topup({ topupId: b.topupId, playerId, amount: b.amount });
     res.json(result);
   } catch (err) {
     ledgerErrorResponse(res, err);
@@ -300,8 +366,10 @@ app.post('/ledger/topup', (req, res) => {
 // daily). Idempotent by grantId and bounded by the daily star cap.
 app.post('/ledger/grant', (req, res) => {
   const b = req.body || {};
+  const playerId = requirePlayerId(req, res);
+  if (playerId === null) return;
   try {
-    const result = ledger.grant({ grantId: b.grantId, playerId: b.playerId, stars: b.stars, vip: b.vip === true });
+    const result = ledger.grant({ grantId: b.grantId, playerId, stars: b.stars, vip: b.vip === true });
     res.json(result);
   } catch (err) {
     ledgerErrorResponse(res, err);

@@ -6,6 +6,7 @@
 // ============================================================
 
 import { config } from '../config';
+import { getTelegramInitData } from './telegramAuth';
 
 export type MatchMode = 'host' | 'join' | 'ai' | 'matchmade';
 
@@ -112,7 +113,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   try {
     res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Telegram-Init-Data': getTelegramInitData() },
       body: JSON.stringify(body),
       signal: controller.signal
     });
@@ -178,7 +179,7 @@ export const ledger = {
 
   leaderboard(limit = 50): Promise<LeaderboardEntry[]> {
     const url = `${config.gameServer}/ledger/leaderboard?limit=${Math.max(1, Math.min(100, limit))}`;
-    return fetch(url, { headers: { Accept: 'application/json' } })
+    return fetch(url, { headers: { Accept: 'application/json', 'X-Telegram-Init-Data': getTelegramInitData() } })
       .then((res) => {
         if (!res.ok) throw new LedgerError('network', 'تعذر تحميل لوحة الصدارة');
         return res.json() as Promise<{ players: LeaderboardEntry[] }>;
