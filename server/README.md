@@ -89,6 +89,7 @@ npm start            # يستمع على المنفذ 8000
 | `WEBHOOK_URL` | *(فارغ)* | الرابط العام للويب هوك (مثل `https://sv-xxx.koyeb.app/webhook`) — يُسجَّل عند الإقلاع |
 | `WEBHOOK_SECRET` | *(فارغ)* | سرّ مصادقة تحديثات تيليجرام (يُطابَق مع ترويسة `X-Telegram-Bot-Api-Secret-Token`) |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | قاعدة Bot API (للتعديل في الاختبارات فقط) |
+| `CORS_ORIGIN` | `*` | أصل الواجهة المسموح له باستدعاء الـ API (التحقق عبر initData لا عبر الكوكيز) |
 
 ## اختبار سريع
 
@@ -103,6 +104,11 @@ node -e "const w=new (require('ws'))('ws://127.0.0.1:8080/match');w.on('open',()
 1. **Create Service** → **Dockerfile** → المجلد `server/`.
 2. المنطقة: `Frankfurt` (المجانية)، الحجم المجاني (512MB).
 3. المنفذ: `8000`.
-4. بعد النشر خذ رابط الخدمة (مثل `https://xxx.koyeb.app`) وحدّث ثوابت الاتصال في واجهة اللعبة:
-   - WebSocket: `wss://xxx.koyeb.app/match`
-   - PeerJS: `host: xxx.koyeb.app, port: 443, path: '/peerjs', secure: true`
+4. متغيّرات البيئة المطلوبة: `BOT_TOKEN` + `WEBHOOK_URL` + `WEBHOOK_SECRET` (انظر `.env.example`). متغيّر `CORS_ORIGIN` (`*` افتراضياً) يسمح للواجهة على Vercel باستدعاء الـ API من أصل آخر.
+5. بعد النشر خذ رابط الخدمة (مثل `https://xxx.koyeb.app`) وضعه في `VITE_GAME_SERVER` بواجهة اللعبة (Vercel)، ثم تحقّق:
+
+```bash
+GAME_SERVER=https://xxx.koyeb.app node server/deploy-smoke.mjs
+```
+
+الدليل الكامل خطوة بخطوة في `DEPLOY.md`.

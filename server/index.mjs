@@ -224,6 +224,22 @@ const app = express();
 const server = createServer(app);
 app.use(express.json({ limit: '16kb' }));
 
+// ---- CORS ------------------------------------------------------------------
+// The Vercel frontend calls this API cross-origin and sends the custom
+// X-Telegram-Init-Data header, which forces a browser preflight. Allow it
+// explicitly — the API authenticates via Telegram initData (not cookies), so
+// a wildcard origin is safe. Must run before the auth gate so OPTIONS
+// preflights (which carry no initData) are answered without a 401.
+const CORS_ORIGIN = (process.env.CORS_ORIGIN || '*').trim();
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN);
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Telegram-Init-Data');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // ============================================================
 // Economy ledger — the server-side authority for star movement
 // ============================================================
