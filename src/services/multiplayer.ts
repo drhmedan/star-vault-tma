@@ -1,5 +1,5 @@
 import Peer, { DataConnection } from 'peerjs';
-import { MultiplayerMessage, DeployedUnit, CommanderAbilityType } from '../types';
+import { MultiplayerMessage } from '../types';
 import { config } from '../config';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -274,42 +274,6 @@ export class MultiplayerService {
     if (this.broadcastChannel) {
       try { this.broadcastChannel.postMessage(msg); } catch { /* drop silent */ }
     }
-  }
-
-  public sendUnitDeployment(unit: DeployedUnit) {
-    this.sendMessage({
-      type: 'DEPLOY_UNIT',
-      senderId: this.myPlayerId,
-      payload: unit,
-      timestamp: Date.now()
-    });
-  }
-
-  public sendAbilityUse(abilityId: CommanderAbilityType, targetX?: number, targetY?: number) {
-    this.sendMessage({
-      type: 'USE_ABILITY',
-      senderId: this.myPlayerId,
-      payload: { abilityId, targetX, targetY },
-      timestamp: Date.now()
-    });
-  }
-
-  public sendReadyState(isReady: boolean) {
-    this.sendMessage({
-      type: 'READY',
-      senderId: this.myPlayerId,
-      payload: { isReady },
-      timestamp: Date.now()
-    });
-  }
-
-  public sendCombatStart() {
-    this.sendMessage({
-      type: 'COMBAT_START',
-      senderId: this.myPlayerId,
-      payload: {},
-      timestamp: Date.now()
-    });
   }
 
   public sendGameOver(winnerId: number) {

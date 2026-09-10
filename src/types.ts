@@ -93,77 +93,10 @@ export interface StarPackage {
   popular?: boolean;
 }
 
-// =================== TACTICAL CYBER WAR (PVP) ===================
-
-export type TacticalUnitType = 'mech' | 'sniper' | 'commando' | 'drone' | 'tech';
-
-export interface TacticalUnitDefinition {
-  type: TacticalUnitType;
-  nameAr: string;
-  roleAr: string;
-  energyCost: number;
-  hp: number;
-  attack: number;
-  attackSpeedSec: number; // Attack interval in seconds
-  range: number; // Attack range in grid units (1 to 5)
-  speed: number; // Movement speed
-  icon: string;
-  color: string;
-  descriptionAr: string;
-}
-
-export interface DeployedUnit {
-  instanceId: string;
-  ownerId: number; // Player 1 or 2 ID
-  side: 'ally' | 'enemy';
-  type: TacticalUnitType;
-  x: number; // Visual X coordinate on grid (0-5)
-  y: number; // Visual Y coordinate on grid (0-5)
-  currentHp: number;
-  maxHp: number;
-  attack: number;
-  range: number;
-  shield: number;
-  isStunned: boolean;
-  lastAttackTime: number;
-  targetInstanceId?: string;
-}
-
-export type CommanderAbilityType = 'orbital' | 'shield' | 'emp';
-
-export interface CommanderAbility {
-  id: CommanderAbilityType;
-  nameAr: string;
-  energyCost: number;
-  cooldownSec: number;
-  icon: string;
-  descriptionAr: string;
-}
-
-export type BattlePhase = 'matchmaking' | 'deployment' | 'combat' | 'gameover';
-
-export interface CombatLogEntry {
-  id: string;
-  textAr: string;
-  type: 'damage' | 'kill' | 'ability' | 'system';
-  timestamp: number;
-}
-
-export interface PvPPlayerInfo {
-  id: number;
-  name: string;
-  avatar: string;
-  trophies: number;
-  isHost: boolean;
-  isReady: boolean;
-  energy: number;
-  maxEnergy: number;
-  equippedWeapon?: VaultItem;
-  equippedArmor?: VaultItem;
-}
+// =================== MULTIPLAYER (SHOOTER P2P) ===================
 
 export interface MultiplayerMessage {
-  type: 'JOIN_ROOM' | 'READY' | 'DEPLOY_UNIT' | 'USE_ABILITY' | 'COMBAT_START' | 'SYNC_DAMAGE' | 'SURRENDER' | 'GAME_OVER' | 'PING' | 'SYNC_SHOOTER_STATE' | 'SHOOT_BULLETS' | 'BULLET_HIT' | 'LOOT_TAKEN';
+  type: 'JOIN_ROOM' | 'SYNC_SHOOTER_STATE' | 'SHOOT_BULLETS' | 'BULLET_HIT' | 'LOOT_TAKEN' | 'GAME_OVER';
   senderId: number;
   payload: any;
   timestamp: number;
