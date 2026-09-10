@@ -28,9 +28,12 @@ import { randomBytes } from 'node:crypto';
 import express from 'express';
 import { ExpressPeerServer } from 'peer';
 import { WebSocketServer, WebSocket } from 'ws';
+import { createLedger } from './ledger.mjs';
 
 const PORT = Number(process.env.PORT || 8000);
 const HOST = '0.0.0.0';
+
+const ledger = createLedger();
 
 // ---- Matchmaking configuration (env-overridable for tests) ----
 // quick  = the live queue: pairs humans 1v1 (maxHumans 2) and fills the map
@@ -127,6 +130,67 @@ function tick() {
 // ---- HTTP app ----
 const app = express();
 const server = createServer(app);
+app.use(express.json({ limit: '16kb' }));
+
+// ============================================================
+// Economy ledger — the server-side authority for star movement
+// ============================================================
+function ledgerErrorResponse(res, err) {
+  const code = err && err.code;
+  if (code === 'insufficient') return res.status(409).json({ error: err.message, code });
+  if (code === 'limited') return res.status(429).json({ error: err.message, code });
+  if (code === 'invalid') return res.status(400).json({ error: err.message, code });
+  if (code === 'forbidden') return res.status(403).json({ error: err.message, code });
+  return res.status(500).json({ error: 'خطأ داخلي في سجل الحسابات' });
+}
+
+// Read a player's authoritative balance (does not persist unknown players).
+app.get('/ledger/player/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'معرّف لاعب غير صالح' });
+  try {
+    res.json(ledger.playerView(id));
+  } catch (err) {
+    ledgerErrorResponse(res, err);
+  }
+});
+
+// Escrow a stake before a staked match starts.
+app.post('/ledger/stake', (req, res) => {
+  const b = req.body || {};
+  try {
+    const receipt = ledger.stake({ playerId: b.playerId, amount: b.amount, roomCode: b.roomCode });
+    res.json(receipt);
+  } catch (err) {
+    ledgerErrorResponse(res, err);
+  }
+});
+
+// Settle a finished match: computes and pays the authoritative rewards.
+app.post('/ledger/settle', (req, res) => {
+  const b = req.body || {};
+  try {
+    const settlement = ledger.settle({
+      matchId: b.matchId, playerId: b.playerId, escrowId: b.escrowId,
+      won: b.won, kills: b.kills, damage: b.damage, accuracy: b.accuracy,
+      durationSec: b.durationSec, mode: b.mode
+    });
+    res.json(settlement);
+  } catch (err) {
+    ledgerErrorResponse(res, err);
+  }
+});
+
+// Refund an open escrow (match aborted / server unreachable at settle time).
+app.post('/ledger/escrow/cancel', (req, res) => {
+  const b = req.body || {};
+  try {
+    const result = ledger.cancelEscrow(b.escrowId, b.playerId);
+    res.json(result);
+  } catch (err) {
+    ledgerErrorResponse(res, err);
+  }
+});
 
 // ---- PeerJS signaling (WebRTC handshake only) ----
 // Mounted at the root so the client's default path "/" resolves to the
@@ -144,7 +208,12 @@ const peerApp = ExpressPeerServer(server, {
 app.use(peerApp);
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, queue: queue.length, players: queue.reduce((s, p) => s + p.teamSize, 0) });
+  res.json({
+    ok: true,
+    queue: queue.length,
+    players: queue.reduce((s, p) => s + p.teamSize, 0),
+    ledger: ledger.stats()
+  });
 });
 
 // ---- Matchmaking WebSocket ----

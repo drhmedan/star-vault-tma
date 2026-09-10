@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Package, Star, Swords, Disc, Users, ShoppingBag, 
   Sparkles, CheckCircle, Volume2, VolumeX, Backpack, Shield, Crosshair
@@ -20,6 +20,8 @@ import { CyberWarzoneArena } from './components/CyberWarzoneArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
 import { MapId } from './game3d/types3d';
 import { MatchInfo } from './services/matchmaking';
+import { config } from './config';
+import { ledger, LedgerError, MatchCompletion, SettleOutcome } from './services/ledger';
 import { sound } from './audio/soundEngine';
 
 type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals';
@@ -198,24 +200,104 @@ export const App: React.FC = () => {
   };
 
   // PvP Tactical Handlers
-  const handleStartPvPMatch = (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId: MapId = 'warzone', matchInfo?: MatchInfo) => {
+  // Track the active stake escrow across the async escrow -> settle window.
+  const escrowRef = useRef<{ id: string; verified: boolean; amount: number }>({ id: '', verified: false, amount: 0 });
+  const startingMatchRef = useRef(false);
+
+  const handleStartPvPMatch = async (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId: MapId = 'warzone', matchInfo?: MatchInfo) => {
+    if (startingMatchRef.current) return;
     if (stakeStars > 0 && user.stars < stakeStars) {
       setTab('shop');
       return;
     }
-    if (stakeStars > 0) {
-      setUser(p => ({ ...p, stars: p.stars - stakeStars }));
+    startingMatchRef.current = true;
+    escrowRef.current = { id: '', verified: false, amount: stakeStars };
+    try {
+      if (stakeStars > 0) {
+        if (ledger.available) {
+          // Server holds the stake in escrow; the match starts only once the
+          // escrow is secured so stars can never be spent twice.
+          try {
+            const receipt = await ledger.escrow(user.id, stakeStars, roomCode);
+            escrowRef.current = { id: receipt.escrowId, verified: true, amount: stakeStars };
+            setUser(p => ({ ...p, stars: receipt.balance }));
+          } catch (e) {
+            if ((e as LedgerError).code === 'insufficient') {
+              setTab('shop');
+              return;
+            }
+            // Server unreachable: play offline with a local deduction.
+            setUser(p => ({ ...p, stars: Math.max(0, p.stars - stakeStars) }));
+          }
+        } else {
+          // Offline mode: local deduction, exactly as before.
+          setUser(p => ({ ...p, stars: p.stars - stakeStars }));
+        }
+      }
+      setActiveMatch({ roomCode, mode, stakeStars, mapId, matchInfo });
+    } finally {
+      startingMatchRef.current = false;
     }
-    setActiveMatch({ roomCode, mode, stakeStars, mapId, matchInfo });
   };
 
-  const handleMatchComplete = (won: boolean, trophiesDelta: number, dustDelta: number, starsDelta: number) => {
-    setUser(p => ({
-      ...p,
-      trophies: Math.max(0, (p.trophies || 0) + trophiesDelta),
-      starDust: p.starDust + dustDelta,
-      stars: p.stars + starsDelta
-    }));
+  const handleMatchComplete = async (result: MatchCompletion): Promise<SettleOutcome> => {
+    const localTrophies = result.won ? 25 : -15;
+    const localDust = result.won ? 200 : 30;
+    const localStars = result.won && result.stake > 0 ? Math.floor(result.stake * 1.8) : 0;
+
+    const applyLocal = (): SettleOutcome => {
+      setUser(p => ({
+        ...p,
+        trophies: Math.max(0, (p.trophies || 0) + localTrophies),
+        starDust: p.starDust + localDust,
+        stars: p.stars + localStars
+      }));
+      return { trophies: localTrophies, dust: localDust, stars: localStars, verified: false };
+    };
+
+    // Offline (or AI training): local progression only.
+    if (!ledger.available || result.mode === 'ai') return applyLocal();
+
+    const esc = escrowRef.current;
+    try {
+      const s = await ledger.settle({
+        ...result,
+        playerId: user.id,
+        escrowId: result.stake > 0 && esc.verified ? esc.id : undefined
+      });
+      setUser(p => ({
+        ...p,
+        stars: result.stake > 0 ? s.balance : p.stars,
+        trophies: Math.max(0, (p.trophies || 0) + s.rewards.trophies),
+        starDust: p.starDust + s.rewards.dust
+      }));
+      escrowRef.current = { id: '', verified: false, amount: 0 };
+      return { trophies: s.rewards.trophies, dust: s.rewards.dust, stars: s.rewards.stars, verified: true };
+    } catch {
+      // Server unreachable at settle time: refund the open escrow (if any)
+      // so the player never loses a stake they couldn't settle, then apply
+      // local progression without minting unverifiable stars.
+      if (result.stake > 0 && esc.verified && esc.id) {
+        try {
+          const c = await ledger.cancelEscrow(esc.id, user.id);
+          setUser(p => ({
+            ...p,
+            stars: c.balance,
+            trophies: Math.max(0, (p.trophies || 0) + localTrophies),
+            starDust: p.starDust + localDust
+          }));
+        } catch {
+          setUser(p => ({
+            ...p,
+            trophies: Math.max(0, (p.trophies || 0) + localTrophies),
+            starDust: p.starDust + localDust
+          }));
+        }
+        escrowRef.current = { id: '', verified: false, amount: 0 };
+        return { trophies: localTrophies, dust: localDust, stars: 0, verified: false };
+      }
+      return applyLocal();
+    }
   };
 
   return (

@@ -1,6 +1,12 @@
 -- ==========================================================
 -- STAR VAULT TMA: TiDB Serverless High-Availability Schema
 -- Compatible with MySQL 8.0 & TiDB Serverless Free Tier
+--
+-- This schema is the production target for the server-side
+-- economy. The current server (`server/ledger.mjs`) writes an
+-- append-only JSONL journal on the Koyeb disk; migrating to TiDB
+-- means replaying that journal into `escrows` + `match_ledger`
+-- (same fields, same order) and swapping the storage adapter.
 -- ==========================================================
 
 CREATE TABLE IF NOT EXISTS users (
@@ -59,4 +65,42 @@ CREATE TABLE IF NOT EXISTS case_battles (
   winner_id BIGINT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   finished_at TIMESTAMP NULL
+);
+
+-- ---- Economy ledger (server-authoritative star movement) ----
+-- Mirrors the JSONL journal fields in `server/ledger.mjs` so the TiDB
+-- swap is a straight replay. `escrows` holds open stakes; `match_ledger`
+-- is the immutable audit trail of settled matches.
+
+CREATE TABLE IF NOT EXISTS escrows (
+  escrow_id VARCHAR(64) PRIMARY KEY,
+  player_id BIGINT NOT NULL,
+  amount INT NOT NULL,
+  room_code VARCHAR(64) NOT NULL,
+  status ENUM('open', 'settled', 'cancelled', 'released') DEFAULT 'open',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  settled_match_id VARCHAR(128) NULL,
+  INDEX idx_escrow_player (player_id),
+  INDEX idx_escrow_room (player_id, room_code)
+);
+
+CREATE TABLE IF NOT EXISTS match_ledger (
+  match_id VARCHAR(128) PRIMARY KEY,
+  player_id BIGINT NOT NULL,
+  escrow_id VARCHAR(64) NULL,
+  mode VARCHAR(16) NOT NULL,
+  won BOOLEAN NOT NULL,
+  stake INT NOT NULL DEFAULT 0,
+  kills INT NOT NULL DEFAULT 0,
+  damage INT NOT NULL DEFAULT 0,
+  accuracy TINYINT NOT NULL DEFAULT 0,
+  duration_sec INT NOT NULL DEFAULT 0,
+  reward_xp INT NOT NULL DEFAULT 0,
+  reward_trophies INT NOT NULL DEFAULT 0,
+  reward_dust INT NOT NULL DEFAULT 0,
+  reward_stars INT NOT NULL DEFAULT 0,
+  balance_after INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_ledger_player (player_id),
+  INDEX idx_ledger_day (player_id, created_at)
 );

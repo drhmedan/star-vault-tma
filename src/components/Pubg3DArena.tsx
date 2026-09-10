@@ -12,6 +12,8 @@ import {
 } from '../game3d/types3d';
 import { multiplayer, ConnectionStatus } from '../services/multiplayer';
 import { MatchInfo } from '../services/matchmaking';
+import { MatchCompletion, SettleOutcome } from '../services/ledger';
+import { config } from '../config';
 import { sound } from '../audio/soundEngine';
 import { tgHaptics } from '../services/telegramHaptics';
 
@@ -126,7 +128,8 @@ interface Pubg3DArenaProps {
   /** Matchmade room metadata (human roster + bot fill count). */
   matchInfo?: MatchInfo;
   onExit: () => void;
-  onMatchComplete: (won: boolean, trophiesDelta: number, dustDelta: number, starsDelta: number) => void;
+  /** Resolves to the deltas actually applied (server-settled when online). */
+  onMatchComplete: (result: MatchCompletion) => Promise<SettleOutcome>;
 }
 
 type Phase = 'countdown' | 'grace' | 'combat' | 'over';
@@ -306,7 +309,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const [nearbyLoot, setNearbyLoot] = useState<LootItem3D | null>(null);
   const [centerMsg, setCenterMsg] = useState<{ text: string; sub: string; key: number } | null>(null);
   const [cookPreview, setCookPreview] = useState(false);
-  const [stats, setStats] = useState<{ kills: number; damage: number; accuracy: number; time: string; xp: number; trophies: number; dust: number; stars: number } | null>(null);
+  const [stats, setStats] = useState<{ kills: number; damage: number; accuracy: number; time: string; xp: number; trophies: number; dust: number; stars: number; verified?: boolean } | null>(null);
   const [autoFire, setAutoFire] = useState(false);
 
   const pushDamageNumber = useCallback((world: THREE.Vector3, camera: THREE.Camera, canvas: HTMLCanvasElement, text: string, headshot: boolean) => {
@@ -479,6 +482,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
     let muzzleT = 0;
     const matchStart = performance.now();
+    // Unique per-match id for idempotent server-side settlement.
+    const matchId = `${roomCode}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     let lastCountShown = 4;
     const zone = { timer: 45, phase: 'wait' as 'wait' | 'shrink', target: new THREE.Vector2() };
     const totalMatch = 300;
@@ -558,8 +563,20 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         sound.playDefeat();
         tgHaptics.notification('error');
       }
-      onMatchComplete(won, trophies, dust, stars);
       if (document.pointerLockElement) document.exitPointerLock();
+
+      // Settle with the server-side ledger when a live backend is configured.
+      // The end screen always shows the real applied numbers.
+      onMatchComplete({
+        won, kills: p.kills, damage: Math.round(p.damageDealt), accuracy: acc,
+        durationSec: Math.round(dur), mode, stake: stakeStars, matchId
+      })
+        .then((final) => {
+          setStats((s) => s ? { ...s, stars: final.stars, verified: final.verified } : s);
+        })
+        .catch(() => {
+          setStats((s) => s ? { ...s, verified: false } : s);
+        });
     }
 
     function damagePlayer(dmg: number, fromPos?: THREE.Vector3) {
@@ -2655,6 +2672,23 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
                 <div className="text-sm font-black text-amber-400">{stats.stars > 0 ? `+${stats.stars}` : '—'}</div>
               </div>
             </div>
+
+            {/* Ledger settlement status — trust signal for the economy */}
+            {mode !== 'ai' && (
+              <div className="mb-4 flex items-center justify-center gap-1.5 text-[10px] font-bold">
+                {config.matchmakerAvailable ? (
+                  stats.verified === true ? (
+                    <span className="text-emerald-300">✓ تم تسجيل النتيجة في سجل الحسابات</span>
+                  ) : stats.verified === false ? (
+                    <span className="text-amber-300">⚠ تعذر التحقق — النتيجة محلية فقط</span>
+                  ) : (
+                    <span className="text-slate-400">جارٍ تسجيل النتيجة عبر السيرفر…</span>
+                  )
+                ) : (
+                  <span className="text-slate-500">وضع التدريب — النتيجة محلية</span>
+                )}
+              </div>
+            )}
 
             <button onClick={() => { sound.playClick(); onExit(); }}
               className="w-full py-3 bg-gradient-to-l from-blue-600 to-cyan-600 text-white font-black text-sm rounded-xl shadow-lg active:scale-95">
