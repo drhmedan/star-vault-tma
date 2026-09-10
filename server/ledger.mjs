@@ -81,6 +81,9 @@ export function createLedger(options = {}) {
   const activity = new Map();       // playerId -> number[] settle timestamps (last hour)
   const dayStars = new Map();       // `${playerId}:${utcDay}` -> stars credited that day
   let entryCount = 0;
+  let seqCounter = 0;               // monotonic journal sequence (TiDB watermark)
+  let storeHook = null;             // async durable-store mirror, attached after boot
+  let persistChain = Promise.resolve(); // serializes store writes in journal order
 
   function player(id) {
     let p = balances.get(id);
@@ -92,9 +95,18 @@ export function createLedger(options = {}) {
   }
 
   function persist(entry) {
+    entry.seq = ++seqCounter;
     fs.mkdirSync(path.dirname(dataFile), { recursive: true });
     fs.appendFileSync(dataFile, JSON.stringify(entry) + '\n');
     entryCount += 1;
+    // Mirror to the durable store (TiDB) in journal order. Failures are
+    // swallowed: the entry is already journaled locally and the next boot
+    // backfills any gap idempotently by natural key.
+    if (storeHook) {
+      persistChain = persistChain
+        .then(() => storeHook(entry))
+        .catch((err) => console.error('[ledger] durable store sync failed:', err && err.message));
+    }
   }
 
   function releaseExpiredFor(playerId) {
@@ -117,82 +129,132 @@ export function createLedger(options = {}) {
   //   escrow_cancel  -> +amount (explicit refund)
   //   escrow_release -> +amount (auto refund after TTL)
   //   settle         -> +rewards.stars / trophies / dust / xp
-  function load() {
+  function entrySeq(e) {
+    return Number.isFinite(e.seq) ? e.seq : 0;
+  }
+
+  function applyEntryToMemory(e, consumed) {
+    entryCount += 1;
+    if (e.type === 'escrow') {
+      const expired = Date.now() - e.ts >= cfg.escrowTtlMs;
+      if (expired && !consumed.has(e.escrowId)) {
+        // Was never settled and its window lapsed -> refund on load.
+        player(e.playerId).stars += e.amount;
+      } else if (!expired) {
+        // Still-open stake -> apply the deduction.
+        player(e.playerId).stars -= e.amount;
+        escrows.set(e.escrowId, { playerId: e.playerId, amount: e.amount, roomCode: e.roomCode, createdAt: e.ts });
+        escrowKeys.set(`${e.playerId}:${e.roomCode}`, e.escrowId);
+      }
+      // expired && consumed: net effect captured by the settle entry below.
+    } else if (e.type === 'escrow_cancel' || e.type === 'escrow_release') {
+      escrows.delete(e.escrowId);
+      if (e.type === 'escrow_cancel' && e.roomCode) escrowKeys.delete(`${e.playerId}:${e.roomCode}`);
+      player(e.playerId).stars += e.amount;
+    } else if (e.type === 'settle') {
+      const p = player(e.playerId);
+      if (e.name) p.name = String(e.name).slice(0, 32);
+      p.stars += e.rewards.stars;
+      p.trophies = Math.max(0, p.trophies + e.rewards.trophies);
+      p.dust += e.rewards.dust;
+      p.xp += e.rewards.xp;
+      p.matches += 1;
+      if (e.won) p.wins += 1;
+      if (e.escrowId) {
+        escrows.delete(e.escrowId);
+        if (e.roomCode) escrowKeys.delete(`${e.playerId}:${e.roomCode}`);
+      }
+      settlements.set(e.matchId, {
+        rewards: e.rewards, balance: p.stars, trophies: p.trophies, dust: p.dust, xp: p.xp, verified: true
+      });
+      const arr = activity.get(e.playerId) || [];
+      arr.push(e.ts);
+      activity.set(e.playerId, arr);
+      if (e.rewards.stars > 0) {
+        const key = `${e.playerId}:${utcDay(e.ts)}`;
+        dayStars.set(key, (dayStars.get(key) || 0) + e.rewards.stars);
+      }
+    } else if (e.type === 'purchase') {
+      const p = player(e.playerId);
+      p.stars -= e.amount;
+      if (e.vip) p.vip = true;
+      purchases.set(e.purchaseId, { balance: p.stars, spent: e.amount, verified: true });
+    } else if (e.type === 'topup') {
+      const p = player(e.playerId);
+      p.stars += e.amount;
+      topups.set(e.topupId, { balance: p.stars, amount: e.amount, verified: true });
+    } else if (e.type === 'grant') {
+      const p = player(e.playerId);
+      p.stars += e.stars;
+      grants.set(e.grantId, { balance: p.stars, stars: e.stars, verified: true });
+      const key = `${e.playerId}:${utcDay(e.ts)}`;
+      dayStars.set(key, (dayStars.get(key) || 0) + e.stars);
+    }
+  }
+
+  // Replay journal entries with seq > afterSeq into the in-memory indexes.
+  // Returns the entries actually applied (the caller mirrors them to TiDB).
+  function load(afterSeq = -1) {
     let raw = '';
-    try { raw = fs.readFileSync(dataFile, 'utf8'); } catch { return; }
+    try { raw = fs.readFileSync(dataFile, 'utf8'); } catch { return []; }
     const lines = raw.split('\n').filter((l) => l.trim());
+    const applied = [];
 
     // Pass 1: escrow ids consumed by a settle — these must never be refunded
-    // even if their original escrow entry is already past the TTL.
+    // even if their original escrow entry is already past the TTL. Also track
+    // the highest sequence so new writes continue above the watermark.
     const consumed = new Set();
     for (const line of lines) {
       let e;
       try { e = JSON.parse(line); } catch { continue; }
       if (e.type === 'settle' && e.escrowId) consumed.add(e.escrowId);
+      seqCounter = Math.max(seqCounter, entrySeq(e));
     }
 
     // Pass 2: replay in order.
     for (const line of lines) {
       let e;
       try { e = JSON.parse(line); } catch { continue; }
-      entryCount += 1;
-
-      if (e.type === 'escrow') {
-        const expired = Date.now() - e.ts >= cfg.escrowTtlMs;
-        if (expired && !consumed.has(e.escrowId)) {
-          // Was never settled and its window lapsed -> refund on load.
-          player(e.playerId).stars += e.amount;
-        } else if (!expired) {
-          // Still-open stake -> apply the deduction.
-          player(e.playerId).stars -= e.amount;
-          escrows.set(e.escrowId, { playerId: e.playerId, amount: e.amount, roomCode: e.roomCode, createdAt: e.ts });
-          escrowKeys.set(`${e.playerId}:${e.roomCode}`, e.escrowId);
-        }
-        // expired && consumed: net effect captured by the settle entry below.
-      } else if (e.type === 'escrow_cancel' || e.type === 'escrow_release') {
-        escrows.delete(e.escrowId);
-        if (e.type === 'escrow_cancel' && e.roomCode) escrowKeys.delete(`${e.playerId}:${e.roomCode}`);
-        player(e.playerId).stars += e.amount;
-      } else if (e.type === 'settle') {
-        const p = player(e.playerId);
-        if (e.name) p.name = String(e.name).slice(0, 32);
-        p.stars += e.rewards.stars;
-        p.trophies = Math.max(0, p.trophies + e.rewards.trophies);
-        p.dust += e.rewards.dust;
-        p.xp += e.rewards.xp;
-        p.matches += 1;
-        if (e.won) p.wins += 1;
-        if (e.escrowId) {
-          escrows.delete(e.escrowId);
-          if (e.roomCode) escrowKeys.delete(`${e.playerId}:${e.roomCode}`);
-        }
-        settlements.set(e.matchId, {
-          rewards: e.rewards, balance: p.stars, trophies: p.trophies, dust: p.dust, xp: p.xp, verified: true
-        });
-        const arr = activity.get(e.playerId) || [];
-        arr.push(e.ts);
-        activity.set(e.playerId, arr);
-        if (e.rewards.stars > 0) {
-          const key = `${e.playerId}:${utcDay(e.ts)}`;
-          dayStars.set(key, (dayStars.get(key) || 0) + e.rewards.stars);
-        }
-      } else if (e.type === 'purchase') {
-        const p = player(e.playerId);
-        p.stars -= e.amount;
-        if (e.vip) p.vip = true;
-        purchases.set(e.purchaseId, { balance: p.stars, spent: e.amount, verified: true });
-      } else if (e.type === 'topup') {
-        const p = player(e.playerId);
-        p.stars += e.amount;
-        topups.set(e.topupId, { balance: p.stars, amount: e.amount, verified: true });
-      } else if (e.type === 'grant') {
-        const p = player(e.playerId);
-        p.stars += e.stars;
-        grants.set(e.grantId, { balance: p.stars, stars: e.stars, verified: true });
-        const key = `${e.playerId}:${utcDay(e.ts)}`;
-        dayStars.set(key, (dayStars.get(key) || 0) + e.stars);
-      }
+      if (entrySeq(e) <= afterSeq) continue;
+      applyEntryToMemory(e, consumed);
+      applied.push(e);
     }
+    return applied;
+  }
+
+  // Replace the in-memory indexes with state loaded from the durable store.
+  // Called after boot when TiDB is reachable (the journal stays as fallback).
+  function seed(state) {
+    balances.clear(); escrows.clear(); escrowKeys.clear();
+    settlements.clear(); purchases.clear(); grants.clear(); topups.clear();
+    activity.clear(); dayStars.clear();
+    entryCount = 0;
+
+    for (const b of state.balances || []) {
+      balances.set(b.id, {
+        stars: b.stars, trophies: b.trophies || 0, dust: b.dust || 0, xp: b.xp || 0,
+        matches: b.matches || 0, wins: b.wins || 0, vip: !!b.vip, name: b.name || ''
+      });
+    }
+    for (const e of state.escrows || []) {
+      escrows.set(e.escrowId, { playerId: e.playerId, amount: e.amount, roomCode: e.roomCode, createdAt: e.createdAt });
+      escrowKeys.set(`${e.playerId}:${e.roomCode}`, e.escrowId);
+    }
+    for (const s of state.settlements || []) {
+      settlements.set(s.matchId, {
+        rewards: s.rewards, balance: s.balance, trophies: 0, dust: 0, xp: 0, verified: true
+      });
+    }
+    for (const p of state.purchases || []) purchases.set(p.id, { balance: p.balance, spent: p.amount, vip: false, verified: true });
+    for (const g of state.grants || []) grants.set(g.id, { balance: g.balance, stars: g.amount, verified: true });
+    for (const t of state.topups || []) topups.set(t.id, { balance: t.balance, amount: t.amount, verified: true });
+    for (const a of state.activity || []) {
+      const arr = activity.get(a.playerId) || [];
+      arr.push(a.ts);
+      activity.set(a.playerId, arr);
+    }
+    for (const d of state.dayStars || []) dayStars.set(d.key, d.amount);
+    seqCounter = Math.max(seqCounter, Number(state.lastSeq) || 0);
   }
 
   function checkRateLimits(playerId, won) {
@@ -296,7 +358,8 @@ export function createLedger(options = {}) {
     persist({
       type: 'settle', matchId, playerId, escrowId: escrowId || null, roomCode: stakeRoom,
       won: isWin, kills: k, damage: dmg, accuracy: acc, durationSec: dur, mode, stake, name: p.name,
-      rewards, balance: p.stars, ts: Date.now()
+      rewards, balance: p.stars, trophies: p.trophies, dust: p.dust, xp: p.xp, matches: p.matches, wins: p.wins,
+      ts: Date.now()
     });
 
     const settlement = {
@@ -423,5 +486,12 @@ export function createLedger(options = {}) {
   }
 
   load();
-  return { stake, settle, cancelEscrow, purchase, topup, grant, playerView, leaderboard, stats, computeRewards };
+  return {
+    stake, settle, cancelEscrow, purchase, topup, grant, playerView, leaderboard, stats, computeRewards,
+    // Durability hooks used by the TiDB adapter at boot:
+    seed,             // replace in-memory state with the durable store's state
+    load,             // replay journal entries with seq > afterSeq (returns them)
+    attachPersist: (hook) => { storeHook = hook; }, // mirror future writes to the durable store
+    seqNow: () => seqCounter
+  };
 }

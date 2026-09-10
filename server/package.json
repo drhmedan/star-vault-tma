@@ -5,10 +5,12 @@
   "type": "module",
   "description": "Star Vault — matchmaking + WebRTC signaling server (Koyeb free tier)",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "migrate": "node migrate.mjs"
   },
   "dependencies": {
     "express": "^4.21.2",
+    "mysql2": "^3.24.4",
     "peer": "^1.0.2",
     "ws": "^8.18.0"
   }

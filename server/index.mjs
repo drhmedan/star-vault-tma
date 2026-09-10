@@ -34,11 +34,31 @@ import {
   STAR_PACKAGES, createInvoiceLink, validatePayment,
   botApi, parsePayload
 } from './payments.mjs';
+import { connectTiDB, loadSeed, applyEntry, setMeta } from './tidb.mjs';
 
 const PORT = Number(process.env.PORT || 8000);
 const HOST = '0.0.0.0';
 
 const ledger = createLedger();
+
+// ---- Durable store (TiDB) boot -----------------------------------------
+// When TiDB is reachable it becomes the source of truth: the ledger seeds
+// from it, backfills any journal entries TiDB missed while it was down, and
+// mirrors every future write. Otherwise the server runs on the JSONL journal
+// (the same behavior as before TiDB existed).
+const tidbPool = await connectTiDB();
+if (tidbPool) {
+  const seed = await loadSeed(tidbPool);
+  ledger.seed(seed); // replaces the journal replay done inside createLedger()
+  const tail = ledger.load(Number(seed.lastSeq) || -1);
+  for (const entry of tail) {
+    try { await applyEntry(tidbPool, entry); } catch (err) { console.warn('[tidb] backfill entry failed:', err && err.message); }
+  }
+  if (tail.length) await setMeta(tidbPool, 'last_seq', String(ledger.seqNow()));
+  ledger.attachPersist(async (entry) => { await applyEntry(tidbPool, entry); });
+  console.log(`[tidb] connected — ledger served from TiDB (${seed.balances.length} players, seq ${ledger.seqNow()})`);
+}
+// No TiDB: createLedger() already replayed the JSONL journal into memory.
 
 // ---- Telegram identity verification -----------------------------------
 // When BOT_TOKEN is set (production), every /ledger/* request must carry a
@@ -489,6 +509,7 @@ app.use(peerApp);
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
+    db: tidbPool ? 'tidb' : 'jsonl',
     queue: queue.length,
     players: queue.reduce((s, p) => s + p.teamSize, 0),
     ledger: ledger.stats()

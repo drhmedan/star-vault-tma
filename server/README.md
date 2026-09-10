@@ -57,7 +57,7 @@
 
 **تفعيل الويب هوك تلقائياً عند الإقلاع** عند ضبط `BOT_TOKEN` + `WEBHOOK_URL` (يستدعي `setWebhook` بـ `allowed_updates=["message","pre_checkout_query"]`).
 
-**التخزين:** دفتر JSONL على قرص الحاوية (`server/data/ledger.jsonl`) — ينجو من إعادة التشغيل. الترحيل إلى TiDB يتم بإعادة بثّ السجل في جدولَي `escrows` و`match_ledger` (انظر `schema.sql`).
+**التخزين:** دفتر JSONL على قرص الحاوية (`server/data/ledger.jsonl`) — ينجو من إعادة التشغيل. عند ضبط `DATABASE_URL` يصبح **TiDB هو مصدر الحقيقة الدائم** (ينجو من أي إعادة نشر) ويبقى JSONL احتياطياً للكتابة أثناء انقطاع القاعدة (انظر `schema.sql`).
 
 ## التشغيل محلياً
 
@@ -66,6 +66,13 @@ cd server
 npm install
 npm start            # يستمع على المنفذ 8000
 ```
+
+## قاعدة TiDB (المصدر الدائم للحسابات)
+
+1. أنشئ كلاستر **TiDB Serverless Starter** مجاناً، ونفّذ `server/schema.sql` من **SQL Editor** في المتصفح.
+2. أضف متغير `DATABASE_URL` (أو `TIDB_HOST/PORT/USER/PASSWORD/NAME`) — الخادم يتصل تلقائياً عند الإقلاع، و`/health` يعرض `"db": "tidb"`.
+3. لنقل دفتر قائم إلى TiDB مرة واحدة: `npm run migrate` (تكراره آمن).
+4. عند انقطاع TiDB يستمر الخادم على ملف JSONL، ويعيد التعبئة تلقائياً عند عودته (كل عملية لها مفتاح طبيعي يمنع التكرار).
 
 ### متغيّرات البيئة (اختيارية)
 
@@ -90,6 +97,9 @@ npm start            # يستمع على المنفذ 8000
 | `WEBHOOK_SECRET` | *(فارغ)* | سرّ مصادقة تحديثات تيليجرام (يُطابَق مع ترويسة `X-Telegram-Bot-Api-Secret-Token`) |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | قاعدة Bot API (للتعديل في الاختبارات فقط) |
 | `CORS_ORIGIN` | `*` | أصل الواجهة المسموح له باستدعاء الـ API (التحقق عبر initData لا عبر الكوكيز) |
+| `DATABASE_URL` | *(فارغ)* | كونكشن سترينغ TiDB (`mysql://…`) — عند ضبطه يصبح TiDB مصدر الحقيقة |
+| `TIDB_HOST/PORT/USER/PASSWORD/NAME` | *(فارغة)* | بديل عن `DATABASE_URL` كمتغيرات منفصلة |
+| `TIDB_SSL_CA` | *(فارغ)* | مسار ملف CA مخصّص لاتصال TLS (اختياري) |
 
 ## اختبار سريع
 

@@ -13,8 +13,13 @@ CREATE TABLE IF NOT EXISTS users (
   id BIGINT PRIMARY KEY, -- Telegram User ID
   username VARCHAR(64),
   first_name VARCHAR(128),
+  name VARCHAR(64) NOT NULL DEFAULT '',
   stars_balance INT DEFAULT 0,
   dust_balance INT DEFAULT 100,
+  trophies INT DEFAULT 0,
+  xp INT DEFAULT 0,
+  matches INT DEFAULT 0,
+  wins INT DEFAULT 0,
   level INT DEFAULT 1,
   is_vip BOOLEAN DEFAULT FALSE,
   referrer_id BIGINT NULL,
@@ -100,7 +105,31 @@ CREATE TABLE IF NOT EXISTS match_ledger (
   reward_dust INT NOT NULL DEFAULT 0,
   reward_stars INT NOT NULL DEFAULT 0,
   balance_after INT NOT NULL,
+  name VARCHAR(64) NOT NULL DEFAULT '',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_ledger_player (player_id),
   INDEX idx_ledger_day (player_id, created_at)
+);
+
+-- ---- Non-match economy events (purchase / grant / topup) ----
+-- One idempotent row per natural key (purchaseId / grantId / topupId),
+-- mirroring the ledger's in-memory idempotency maps.
+
+CREATE TABLE IF NOT EXISTS ledger_txns (
+  txn_id VARCHAR(128) PRIMARY KEY,
+  kind VARCHAR(16) NOT NULL, -- 'purchase' | 'grant' | 'topup'
+  player_id BIGINT NOT NULL,
+  amount INT NOT NULL,
+  balance_after INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_txns_player (player_id, created_at)
+);
+
+-- ---- Replay watermark ----
+-- Tracks the highest journal sequence mirrored into TiDB so a boot only
+-- replays (and backfills) the journal tail.
+
+CREATE TABLE IF NOT EXISTS meta (
+  k VARCHAR(64) PRIMARY KEY,
+  v VARCHAR(128) NOT NULL
 );
