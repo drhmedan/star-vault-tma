@@ -48,6 +48,12 @@ export interface GrantReceipt {
   verified: boolean;
 }
 
+export interface TopupReceipt {
+  balance: number;
+  amount: number;
+  verified: boolean;
+}
+
 export interface MatchCompletion {
   won: boolean;
   kills: number;
@@ -59,6 +65,8 @@ export interface MatchCompletion {
   matchId: string;
   /** Experience earned — feeds the seasonal battle pass. */
   xp: number;
+  /** Vault item id dropped on victory (soft-currency loot). */
+  victoryDropItemId?: string;
 }
 
 /** The deltas actually applied for a match — returned to the arena so its
@@ -138,11 +146,15 @@ export const ledger = {
     return post<CancelReceipt>('/ledger/escrow/cancel', { escrowId, playerId });
   },
 
-  purchase(purchaseId: string, playerId: number, productId: string, amount: number): Promise<PurchaseReceipt> {
-    return post<PurchaseReceipt>('/ledger/purchase', { purchaseId, playerId, productId, amount });
+  purchase(purchaseId: string, playerId: number, productId: string, amount: number, vip = false): Promise<PurchaseReceipt> {
+    return post<PurchaseReceipt>('/ledger/purchase', { purchaseId, playerId, productId, amount, vip });
   },
 
-  grant(grantId: string, playerId: number, stars: number): Promise<GrantReceipt> {
-    return post<GrantReceipt>('/ledger/grant', { grantId, playerId, stars });
+  topup(topupId: string, playerId: number, amount: number): Promise<TopupReceipt> {
+    return post<TopupReceipt>('/ledger/topup', { topupId, playerId, amount });
+  },
+
+  grant(grantId: string, playerId: number, stars: number, vip = false): Promise<GrantReceipt> {
+    return post<GrantReceipt>('/ledger/grant', { grantId, playerId, stars, vip });
   }
 };

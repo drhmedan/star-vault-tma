@@ -15,7 +15,7 @@ export const Inventory: React.FC<InventoryProps> = ({ items, onSellItem }) => {
     ? items 
     : items.filter(i => i.rarity === filter);
 
-  const totalStarValue = items.reduce((acc, curr) => acc + curr.starValue, 0);
+  const totalDustValue = items.reduce((acc, curr) => acc + curr.dustValue, 0);
 
   return (
     <div className="space-y-4 select-none" dir="rtl">
@@ -32,9 +32,9 @@ export const Inventory: React.FC<InventoryProps> = ({ items, onSellItem }) => {
         </div>
 
         <div className="text-left font-mono">
-          <span className="text-[10px] text-slate-400 block">القيمة بالنجوم</span>
-          <span className="text-base font-black text-amber-400 flex items-center gap-1 justify-end">
-            🌟 {totalStarValue}
+          <span className="text-[10px] text-slate-400 block">القيمة بالغبار</span>
+          <span className="text-base font-black text-cyan-300 flex items-center gap-1 justify-end">
+            💎 {totalDustValue}
           </span>
         </div>
       </div>
@@ -81,13 +81,13 @@ export const Inventory: React.FC<InventoryProps> = ({ items, onSellItem }) => {
               </span>
 
               <div className="w-full pt-3 mt-2 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                <span className="font-mono text-[11px] text-amber-400 font-bold">
-                  🌟 {item.starValue}
+                <span className="font-mono text-[11px] text-cyan-300 font-bold">
+                  💎 {item.dustValue}
                 </span>
                 <button 
                   className="btn btn-ghost btn-xs text-red-400 hover:bg-red-500/20"
                   onClick={() => onSellItem(item)}
-                  title="بيع واسترداد نجوم"
+                  title="بيع واسترداد غبار"
                 >
                   بيع
                 </button>

@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Heart, RefreshCw, Shield } from 'lucide-react';
-import { UserProfile } from '../types';
+import { UserProfile, VaultItem } from '../types';
+import { rollVictoryDrop } from '../data/victoryDrops';
 import { buildMapEnvironment, MAP_CATALOG } from '../game3d/mapRegistry';
 import { createSoldierMesh, createWeaponViewModel, WeaponViewModel } from '../game3d/worldBuilder';
 import {
@@ -311,6 +312,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const [centerMsg, setCenterMsg] = useState<{ text: string; sub: string; key: number } | null>(null);
   const [cookPreview, setCookPreview] = useState(false);
   const [stats, setStats] = useState<{ kills: number; damage: number; accuracy: number; time: string; xp: number; trophies: number; dust: number; stars: number; verified?: boolean } | null>(null);
+  const [victoryDrop, setVictoryDrop] = useState<VaultItem | null>(null);
   const [autoFire, setAutoFire] = useState(false);
 
   const pushDamageNumber = useCallback((world: THREE.Vector3, camera: THREE.Camera, canvas: HTMLCanvasElement, text: string, headshot: boolean) => {
@@ -570,6 +572,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         xp, trophies, dust, stars
       });
       setGameOver(won ? 'victory' : 'defeat');
+      // Victory loot drop: a weighted vault item (soft-currency only).
+      const drop = won ? rollVictoryDrop() : null;
+      setVictoryDrop(drop);
       if (won) {
         sound.playVictory();
         tgHaptics.notification('success');
@@ -584,7 +589,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       // The end screen always shows the real applied numbers.
       onMatchComplete({
         won, kills: p.kills, damage: Math.round(p.damageDealt), accuracy: acc,
-        durationSec: Math.round(dur), mode, stake: stakeStars, matchId, xp
+        durationSec: Math.round(dur), mode, stake: stakeStars, matchId, xp,
+        victoryDropItemId: drop?.id
       })
         .then((final) => {
           setStats((s) => s ? { ...s, stars: final.stars, verified: final.verified } : s);
@@ -2668,6 +2674,18 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
                 <div className="text-lg font-black text-white font-mono">{stats.time}</div>
               </div>
             </div>
+
+            {victoryDrop && (
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+                className="mb-3 flex items-center gap-3 rounded-2xl border border-amber-300/30 bg-amber-400/[0.08] p-2.5 text-right">
+                <span className="grid place-items-center w-11 h-11 rounded-xl bg-black/30 text-2xl">{victoryDrop.icon}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[9px] font-black tracking-widest text-amber-300">غنيمة النصر</span>
+                  <span className="block text-sm font-black text-white truncate">{victoryDrop.nameAr}</span>
+                </span>
+                <span className="text-[10px] font-bold text-amber-200/80">💎 {victoryDrop.dustValue}</span>
+              </motion.div>
+            )}
 
             <div className="bg-slate-900/80 rounded-2xl p-3 border border-slate-800 mb-4 grid grid-cols-4 gap-1 text-center">
               <div>

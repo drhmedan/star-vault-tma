@@ -158,30 +158,56 @@ export const App: React.FC = () => {
 
   const handleSellItem = (item: VaultItem) => {
     sound.playStarCoin();
+    // Items are soft-currency: they sell for star dust, never stars — so
+    // selling can never mint real-money currency client-side.
     setUser(p => ({
       ...p,
-      stars: p.stars + item.starValue
+      starDust: p.starDust + item.dustValue
     }));
     setActiveUnboxingCase(null);
   };
 
+  // Credit stars through the server ledger; on failure (network/limit) fall
+  // back to the dust equivalent so stars are NEVER minted client-side.
+  const grantStarsOrDust = async (grantId: string, amount: number) => {
+    if (ledger.available) {
+      try {
+        const g = await ledger.grant(grantId, user.id, amount);
+        setUser(p => ({ ...p, stars: g.balance }));
+      } catch {
+        setUser(p => ({ ...p, starDust: p.starDust + amount * 10 }));
+      }
+    } else {
+      setUser(p => ({ ...p, stars: p.stars + amount }));
+    }
+  };
+
   const handleWheelReward = (reward: WheelSegment) => {
     if (reward.rewardType === 'stars') {
-      setUser(p => ({ ...p, stars: p.stars + reward.amount, lastDailySpin: Date.now() }));
+      setUser(p => ({ ...p, lastDailySpin: Date.now() }));
+      void grantStarsOrDust(`${user.id}:wheel:${Date.now().toString(36)}`, reward.amount);
     } else if (reward.rewardType === 'dust') {
       setUser(p => ({ ...p, starDust: p.starDust + reward.amount, lastDailySpin: Date.now() }));
     } else if (reward.rewardType === 'jackpot') {
-      setUser(p => ({ ...p, stars: p.stars + 500, isVip: true, lastDailySpin: Date.now() }));
+      setUser(p => ({ ...p, lastDailySpin: Date.now() }));
+      void grantStarsOrDust(`${user.id}:wheel:${Date.now().toString(36)}`, 500);
     } else {
       setUser(p => ({ ...p, starDust: p.starDust + 150, lastDailySpin: Date.now() }));
     }
   };
 
-  const handleStarsPurchased = (stars: number) => {
-    setUser(p => ({
-      ...p,
-      stars: p.stars + stars
-    }));
+  const handleStarsPurchased = async (stars: number) => {
+    if (ledger.available) {
+      try {
+        const t = await ledger.topup(`${user.id}:topup:${Date.now().toString(36)}`, user.id, stars);
+        setUser(p => ({ ...p, stars: t.balance }));
+      } catch {
+        // Server unreachable: local grant (offline fallback only).
+        setUser(p => ({ ...p, stars: p.stars + stars }));
+      }
+    } else {
+      setUser(p => ({ ...p, stars: p.stars + stars }));
+    }
   };
 
   const handleActivateAutoMiner = () => {
@@ -199,9 +225,10 @@ export const App: React.FC = () => {
 
   const handleInventorySell = (item: VaultItem) => {
     sound.playStarCoin();
+    // Soft currency only — dust, never stars.
     setUser(p => ({
       ...p,
-      stars: p.stars + item.starValue,
+      starDust: p.starDust + item.dustValue,
       inventory: p.inventory.filter(i => i !== item)
     }));
   };
@@ -257,6 +284,11 @@ export const App: React.FC = () => {
 
   const handleMatchComplete = async (result: MatchCompletion): Promise<SettleOutcome> => {
     creditBattlePassXp(Math.max(0, Math.round(result.xp || 0)));
+    // Victory drop: add the looted vault item to the inventory (soft value).
+    if (result.victoryDropItemId && ALL_ITEMS[result.victoryDropItemId]) {
+      const drop = { ...ALL_ITEMS[result.victoryDropItemId] };
+      setUser(p => ({ ...p, inventory: [drop, ...p.inventory] }));
+    }
     const localTrophies = result.won ? 25 : -15;
     const localDust = result.won ? 200 : 30;
     const localStars = result.won && result.stake > 0 ? Math.floor(result.stake * 1.8) : 0;
@@ -432,11 +464,9 @@ export const App: React.FC = () => {
             onClaimCommission={() => {
               if (user.referralStarsEarned > 0) {
                 sound.playStarCoin();
-                setUser(p => ({
-                  ...p,
-                  stars: p.stars + p.referralStarsEarned,
-                  referralStarsEarned: 0
-                }));
+                const amount = user.referralStarsEarned;
+                setUser(p => ({ ...p, referralStarsEarned: 0 }));
+                void grantStarsOrDust(`${user.id}:ref:${Date.now().toString(36)}`, amount);
               }
             }}
           />

@@ -32,7 +32,7 @@ export const VipPanel: React.FC<VipPanelProps> = ({ user, onUserChange }) => {
     try {
       if (ledger.available) {
         try {
-          const r = await ledger.purchase(`${user.id}:vip`, user.id, 'vip_subscription', VIP_PRICE_STARS);
+          const r = await ledger.purchase(`${user.id}:vip`, user.id, 'vip_subscription', VIP_PRICE_STARS, true);
           onUserChange({ ...user, stars: r.balance, isVip: true });
         } catch (e) {
           if ((e as LedgerError).code === 'insufficient') { notify('رصيد النجوم غير كافٍ — اشترِ نجومًا أولًا', 'err'); return; }
@@ -57,7 +57,7 @@ export const VipPanel: React.FC<VipPanelProps> = ({ user, onUserChange }) => {
     try {
       if (ledger.available) {
         try {
-          const g = await ledger.grant(`${user.id}:vip:${todayISO()}`, user.id, VIP_DAILY_STARS);
+          const g = await ledger.grant(`${user.id}:vip:${todayISO()}`, user.id, VIP_DAILY_STARS, true);
           onUserChange({ ...user, stars: g.balance, lastVipClaim: todayISO() });
         } catch (e) {
           notify((e as LedgerError).message || 'تعذر استلام المكافأة', 'err');

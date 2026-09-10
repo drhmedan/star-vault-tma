@@ -76,6 +76,7 @@ export function createLedger(options = {}) {
   const settlements = new Map();    // matchId -> settlement result (idempotent settle)
   const purchases = new Map();      // purchaseId -> purchase result (idempotent debit)
   const grants = new Map();         // grantId -> grant result (idempotent credit)
+  const topups = new Map();         // topupId -> topup result (idempotent deposit)
   const activity = new Map();       // playerId -> number[] settle timestamps (last hour)
   const dayStars = new Map();       // `${playerId}:${utcDay}` -> stars credited that day
   let entryCount = 0;
@@ -83,7 +84,7 @@ export function createLedger(options = {}) {
   function player(id) {
     let p = balances.get(id);
     if (!p) {
-      p = { stars: cfg.initialStars, trophies: 0, dust: 0, xp: 0, matches: 0, wins: 0 };
+      p = { stars: cfg.initialStars, trophies: 0, dust: 0, xp: 0, matches: 0, wins: 0, vip: false };
       balances.set(id, p);
     }
     return p;
@@ -176,7 +177,12 @@ export function createLedger(options = {}) {
       } else if (e.type === 'purchase') {
         const p = player(e.playerId);
         p.stars -= e.amount;
+        if (e.vip) p.vip = true;
         purchases.set(e.purchaseId, { balance: p.stars, spent: e.amount, verified: true });
+      } else if (e.type === 'topup') {
+        const p = player(e.playerId);
+        p.stars += e.amount;
+        topups.set(e.topupId, { balance: p.stars, amount: e.amount, verified: true });
       } else if (e.type === 'grant') {
         const p = player(e.playerId);
         p.stars += e.stars;
@@ -310,7 +316,7 @@ export function createLedger(options = {}) {
     return { balance: p.stars, refunded: true };
   }
 
-  function purchase({ purchaseId, playerId, productId, amount }) {
+  function purchase({ purchaseId, playerId, productId, amount, vip = false }) {
     if (typeof purchaseId !== 'string' || purchaseId.length < 6 || purchaseId.length > 96) {
       throw ledgerError('invalid', 'معرّف عملية شراء غير صالح');
     }
@@ -328,13 +334,34 @@ export function createLedger(options = {}) {
     if (p.stars < amt) throw ledgerError('insufficient', 'رصيد النجوم غير كافٍ للشراء');
 
     p.stars -= amt;
-    persist({ type: 'purchase', purchaseId, playerId, productId: product, amount: amt, balance: p.stars, ts: Date.now() });
-    const result = { balance: p.stars, spent: amt, verified: true };
+    if (vip) p.vip = true;
+    persist({ type: 'purchase', purchaseId, playerId, productId: product, amount: amt, vip: p.vip, balance: p.stars, ts: Date.now() });
+    const result = { balance: p.stars, spent: amt, vip: p.vip, verified: true };
     purchases.set(purchaseId, result);
     return result;
   }
 
-  function grant({ grantId, playerId, stars }) {
+  function topup({ topupId, playerId, amount }) {
+    if (typeof topupId !== 'string' || topupId.length < 6 || topupId.length > 96) {
+      throw ledgerError('invalid', 'معرّف عملية شحن غير صالح');
+    }
+    const stored = topups.get(topupId);
+    if (stored) return stored; // idempotent replay
+
+    if (!Number.isFinite(playerId)) throw ledgerError('invalid', 'معرّف لاعب غير صالح');
+    const amt = clampInt(amount, 1, cfg.maxStake * 20, 0);
+    if (amt <= 0) throw ledgerError('invalid', 'قيمة شحن غير صالحة');
+
+    releaseExpiredFor(playerId);
+    const p = player(playerId);
+    p.stars += amt;
+    persist({ type: 'topup', topupId, playerId, amount: amt, balance: p.stars, ts: Date.now() });
+    const result = { balance: p.stars, amount: amt, verified: true };
+    topups.set(topupId, result);
+    return result;
+  }
+
+  function grant({ grantId, playerId, stars, vip = false }) {
     if (typeof grantId !== 'string' || grantId.length < 6 || grantId.length > 96) {
       throw ledgerError('invalid', 'معرّف منحة غير صالح');
     }
@@ -347,6 +374,9 @@ export function createLedger(options = {}) {
 
     releaseExpiredFor(playerId);
 
+    const p = player(playerId);
+    if (vip && !p.vip) throw ledgerError('invalid', 'اشترك في نادي VIP أولاً');
+
     // Grants share the daily star cap with match rewards so the total
     // credits per player per day stay inside the economy budget.
     const today = `${playerId}:${utcDay(Date.now())}`;
@@ -354,10 +384,9 @@ export function createLedger(options = {}) {
     const room = Math.max(0, cfg.maxStarsPerDay - credited);
     if (amt > room) throw ledgerError('limited', 'بلغت سقف نجوم المكافآت اليومي');
 
-    const p = player(playerId);
     p.stars += amt;
     dayStars.set(today, credited + amt);
-    persist({ type: 'grant', grantId, playerId, stars: amt, balance: p.stars, ts: Date.now() });
+    persist({ type: 'grant', grantId, playerId, stars: amt, vip: !!vip, balance: p.stars, ts: Date.now() });
     const result = { balance: p.stars, stars: amt, verified: true };
     grants.set(grantId, result);
     return result;
@@ -369,7 +398,7 @@ export function createLedger(options = {}) {
     const open = Array.from(escrows.values()).filter((e) => e.playerId === playerId);
     return {
       id: playerId, stars: p.stars, trophies: p.trophies, dust: p.dust, xp: p.xp,
-      matches: p.matches, wins: p.wins, openEscrows: open.length
+      matches: p.matches, wins: p.wins, vip: p.vip, openEscrows: open.length
     };
   }
 
@@ -378,5 +407,5 @@ export function createLedger(options = {}) {
   }
 
   load();
-  return { stake, settle, cancelEscrow, purchase, grant, playerView, stats, computeRewards };
+  return { stake, settle, cancelEscrow, purchase, topup, grant, playerView, stats, computeRewards };
 }

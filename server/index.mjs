@@ -192,24 +192,37 @@ app.post('/ledger/escrow/cancel', (req, res) => {
   }
 });
 
-// Debit stars for a store purchase (e.g. the battle pass premium unlock).
+// Debit stars for a store purchase (battle pass, skin, VIP unlock...).
 // Idempotent by purchaseId so a retried request never charges twice.
 app.post('/ledger/purchase', (req, res) => {
   const b = req.body || {};
   try {
-    const result = ledger.purchase({ purchaseId: b.purchaseId, playerId: b.playerId, productId: b.productId, amount: b.amount });
+    const result = ledger.purchase({ purchaseId: b.purchaseId, playerId: b.playerId, productId: b.productId, amount: b.amount, vip: b.vip === true });
     res.json(result);
   } catch (err) {
     ledgerErrorResponse(res, err);
   }
 });
 
-// Credit stars for a claimed grant (e.g. a battle pass star reward).
-// Idempotent by grantId and bounded by the daily star cap.
+// Credit stars for a real-money top-up (stars package purchase). Money-in is
+// not a reward, so it is NOT bounded by the daily reward cap — but it is
+// still idempotent by topupId.
+app.post('/ledger/topup', (req, res) => {
+  const b = req.body || {};
+  try {
+    const result = ledger.topup({ topupId: b.topupId, playerId: b.playerId, amount: b.amount });
+    res.json(result);
+  } catch (err) {
+    ledgerErrorResponse(res, err);
+  }
+});
+
+// Credit stars for a claimed grant (battle pass / wheel / referral / VIP
+// daily). Idempotent by grantId and bounded by the daily star cap.
 app.post('/ledger/grant', (req, res) => {
   const b = req.body || {};
   try {
-    const result = ledger.grant({ grantId: b.grantId, playerId: b.playerId, stars: b.stars });
+    const result = ledger.grant({ grantId: b.grantId, playerId: b.playerId, stars: b.stars, vip: b.vip === true });
     res.json(result);
   } catch (err) {
     ledgerErrorResponse(res, err);

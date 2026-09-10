@@ -188,9 +188,6 @@ export const CaseUnboxingModal: React.FC<CaseUnboxingModalProps> = ({
               <h2 className="text-lg font-black text-slate-100">{winningItem.nameAr}</h2>
               <p className="text-xs text-slate-400 mt-0.5">{winningItem.name}</p>
               <div className="flex items-center justify-center gap-2 mt-2">
-                <span className="badge bg-amber-500/20 text-amber-300 border-amber-500/40 text-xs font-mono font-bold gap-1">
-                  🌟 {winningItem.starValue} نجوم
-                </span>
                 <span className="badge bg-cyan-500/20 text-cyan-300 border-cyan-500/40 text-xs font-mono font-bold gap-1">
                   💎 {winningItem.dustValue} غبار
                 </span>
@@ -203,8 +200,8 @@ export const CaseUnboxingModal: React.FC<CaseUnboxingModalProps> = ({
                 className="btn btn-outline btn-warning btn-sm text-xs font-bold gap-1 shadow"
                 onClick={() => onSellItem(winningItem)}
               >
-                <span>بيع بـ {winningItem.starValue} نجمة</span>
-                <span>🌟</span>
+                <span>بيع بـ {winningItem.dustValue} غبار</span>
+                <span>💎</span>
               </button>
               <button 
                 className="btn btn-primary btn-sm text-xs font-bold gap-1 shadow-lg shadow-primary/25"
