@@ -18,6 +18,7 @@ import { Pubg3DArena } from './components/Pubg3DArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
 import { BattlePass } from './components/BattlePass';
 import { SkinsPanel } from './components/SkinsPanel';
+import { VipPanel } from './components/VipPanel';
 import { MapId } from './game3d/types3d';
 import { MatchInfo } from './services/matchmaking';
 import { config } from './config';
@@ -394,12 +395,17 @@ export const App: React.FC = () => {
 
         {/* TAB 5: STARS SHOP */}
         {tab === 'shop' && (
-          <StarsShop 
-            onStarsPurchased={handleStarsPurchased}
-            onActivateAutoMiner={handleActivateAutoMiner}
-            autoMinerActive={!!user.autoMinerActiveUntil && user.autoMinerActiveUntil > Date.now()}
-            onClose={() => setTab('cyberwar')}
-          />
+          <>
+            <StarsShop 
+              onStarsPurchased={handleStarsPurchased}
+              onActivateAutoMiner={handleActivateAutoMiner}
+              autoMinerActive={!!user.autoMinerActiveUntil && user.autoMinerActiveUntil > Date.now()}
+              onClose={() => setTab('cyberwar')}
+            />
+            <div className="mt-4">
+              <VipPanel user={user} onUserChange={setUser} />
+            </div>
+          </>
         )}
 
         {/* TAB 6: INVENTORY */}

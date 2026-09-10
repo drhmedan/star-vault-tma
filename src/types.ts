@@ -72,6 +72,8 @@ export interface UserProfile {
     soldier?: string;
     weapon?: string;
   };
+  /** ISO date (YYYY-MM-DD) of the last VIP daily-star claim. */
+  lastVipClaim?: string;
 }
 
 export interface BattleRoom {
