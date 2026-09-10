@@ -55,6 +55,20 @@ export interface TopupReceipt {
   verified: boolean;
 }
 
+/** Authoritative server-side view of a player's balances. */
+export interface PlayerView {
+  id: number;
+  name?: string;
+  stars: number;
+  trophies: number;
+  dust: number;
+  xp: number;
+  matches: number;
+  wins: number;
+  vip?: boolean;
+  openEscrows?: number;
+}
+
 export interface MatchCompletion {
   won: boolean;
   kills: number;
@@ -175,6 +189,16 @@ export const ledger = {
 
   grant(grantId: string, playerId: number, stars: number, vip = false): Promise<GrantReceipt> {
     return post<GrantReceipt>('/ledger/grant', { grantId, playerId, stars, vip });
+  },
+
+  /** Read the authoritative server-side balance for a verified player. */
+  player(playerId: number): Promise<PlayerView> {
+    const url = `${config.gameServer}/ledger/player/${playerId}`;
+    return fetch(url, { headers: { Accept: 'application/json', 'X-Telegram-Init-Data': getTelegramInitData() } })
+      .then((res) => {
+        if (!res.ok) throw new LedgerError('network', 'تعذر تحديث الرصيد');
+        return res.json() as Promise<PlayerView>;
+      });
   },
 
   leaderboard(limit = 50): Promise<LeaderboardEntry[]> {

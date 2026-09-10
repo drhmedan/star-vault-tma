@@ -4,6 +4,8 @@ import confetti from 'canvas-confetti';
 import { StarPackage } from '../types';
 import { STAR_PACKAGES } from '../data/vaultsData';
 import { sound } from '../audio/soundEngine';
+import { requestStarsInvoice, PaymentError } from '../services/payments';
+import { getTelegramWebApp } from '../services/telegramAuth';
 
 interface StarsShopProps {
   onStarsPurchased: (amount: number) => void;
@@ -19,33 +21,41 @@ export const StarsShop: React.FC<StarsShopProps> = ({
   onClose
 }) => {
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState('');
 
-  const buyPackage = (pkg: StarPackage) => {
+  // Real Telegram Stars flow: the server creates the invoice (verified by the
+  // Telegram identity), the Mini App opens it, and only the payment webhook
+  // credits the account. Nothing is granted client-side.
+  const buyPackage = async (pkg: StarPackage) => {
     setLoadingId(pkg.id);
+    setErrorMsg('');
     sound.playClick();
 
-    // Check if running inside Telegram Mini App
-    const tg = (window as any).Telegram?.WebApp;
-    if (tg && tg.openInvoice) {
-      // Live Telegram Stars Invoice flow:
-      // In production, fetch invoiceLink from /api/create-invoice?packageId=pkg.id
-      // Then call tg.openInvoice(invoiceLink, (status) => { ... })
-      setTimeout(() => {
+    const tg = getTelegramWebApp();
+    if (!tg?.openInvoice) {
+      setLoadingId(null);
+      setErrorMsg('الشراء متاح داخل تطبيق تيليجرام فقط — افتح اللعبة من تيليجرام لإتمام الدفع.');
+      return;
+    }
+
+    try {
+      const invoice = await requestStarsInvoice(pkg.id);
+      tg.openInvoice(invoice.invoiceLink, (status) => {
         setLoadingId(null);
-        const total = pkg.starsAmount + pkg.bonusStars;
-        sound.playStarCoin();
-        confetti({ particleCount: 70, spread: 60 });
-        onStarsPurchased(total);
-      }, 1000);
-    } else {
-      // Test / Web Fallback: Instant instant grant
-      setTimeout(() => {
-        setLoadingId(null);
-        const total = pkg.starsAmount + pkg.bonusStars;
-        sound.playStarCoin();
-        confetti({ particleCount: 70, spread: 60 });
-        onStarsPurchased(total);
-      }, 800);
+        if (status === 'paid') {
+          sound.playStarCoin();
+          confetti({ particleCount: 70, spread: 60 });
+          // The webhook credits the server; refresh the real balance from it.
+          onStarsPurchased(invoice.starsAmount + invoice.bonusStars);
+        } else if (status === 'cancelled') {
+          setErrorMsg('أُلغيت عملية الشراء.');
+        } else if (status === 'failed') {
+          setErrorMsg('فشلت عملية الدفع — تحقق من رصيد النجوم وحاول مجدداً.');
+        }
+      });
+    } catch (e) {
+      setLoadingId(null);
+      setErrorMsg(e instanceof PaymentError ? e.message : 'تعذر إنشاء الفاتورة حالياً.');
     }
   };
 
@@ -67,6 +77,13 @@ export const StarsShop: React.FC<StarsShopProps> = ({
           ✕
         </button>
       </div>
+
+      {errorMsg && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2.5 text-xs font-bold text-amber-200">
+          <ShieldCheck className="h-4 w-4 shrink-0" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
 
       {/* Telegram Star Packages Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">

@@ -206,18 +206,24 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleStarsPurchased = async (stars: number) => {
-    if (ledger.available) {
-      try {
-        const t = await ledger.topup(`${user.id}:topup:${Date.now().toString(36)}`, user.id, stars);
-        setUser(p => ({ ...p, stars: t.balance }));
-      } catch {
-        // Server unreachable: local grant (offline fallback only).
-        setUser(p => ({ ...p, stars: p.stars + stars }));
+  // After a successful Telegram Stars payment the webhook credits the server;
+  // this refreshes the authoritative balance (the webhook may land a beat
+  // later than the invoice callback, so retry briefly before giving up).
+  const handleStarsPurchased = (stars: number) => {
+    if (!ledger.available) return;
+    const refresh = async (attempts: number) => {
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const v = await ledger.player(user.id);
+          if (v.stars > user.stars || i === attempts - 1) {
+            setUser(p => ({ ...p, stars: v.stars }));
+            return;
+          }
+        } catch { /* server briefly unreachable — retry */ }
+        await new Promise(r => window.setTimeout(r, 900));
       }
-    } else {
-      setUser(p => ({ ...p, stars: p.stars + stars }));
-    }
+    };
+    void refresh(4);
   };
 
   const handleActivateAutoMiner = () => {

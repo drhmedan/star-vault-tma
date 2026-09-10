@@ -30,6 +30,10 @@ import { ExpressPeerServer } from 'peer';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createLedger } from './ledger.mjs';
 import { verifyTelegramInitData } from './telegramAuth.mjs';
+import {
+  STAR_PACKAGES, createInvoiceLink, validatePayment,
+  botApi, parsePayload
+} from './payments.mjs';
 
 const PORT = Number(process.env.PORT || 8000);
 const HOST = '0.0.0.0';
@@ -44,6 +48,10 @@ const ledger = createLedger();
 // check) so local testing keeps working.
 const BOT_TOKEN = (process.env.BOT_TOKEN || '').trim();
 const INITDATA_MAX_AGE_MS = Number(process.env.INITDATA_MAX_AGE_MS || 24 * 60 * 60 * 1000);
+// Payments: the public webhook URL Telegram posts updates to, and an optional
+// secret token (also registered via setWebhook) that authenticates them.
+const WEBHOOK_URL = (process.env.WEBHOOK_URL || '').trim();
+const WEBHOOK_SECRET = (process.env.WEBHOOK_SECRET || '').trim();
 // Money-in (stars top-ups) must originate from the Telegram payment webhook in
 // production — a verified client is never allowed to credit its own account.
 const ALLOW_CLIENT_TOPUP = process.env.ALLOW_CLIENT_TOPUP === '1';
@@ -228,11 +236,12 @@ function ledgerErrorResponse(res, err) {
   return res.status(500).json({ error: 'خطأ داخلي في سجل الحسابات' });
 }
 
-// ---- Telegram identity gate for the whole ledger ----------------------
-// In production (BOT_TOKEN set) every /ledger request must carry a valid
-// initData signature; the middleware verifies it and stamps the verified
-// Telegram user onto the request. Dev mode (no token) skips verification.
-app.use('/ledger', (req, res, next) => {
+// ---- Telegram identity gate -------------------------------------------------
+// In production (BOT_TOKEN set) every /ledger and /api request must carry a
+// valid initData signature; the middleware verifies it and stamps the
+// verified Telegram user onto the request. Dev mode (no token) skips the
+// check so local testing keeps working.
+function telegramAuth(req, res, next) {
   if (!BOT_TOKEN) return next();
   const initData = (req.get('x-telegram-init-data') || '').trim();
   const result = verifyTelegramInitData(initData, BOT_TOKEN, { maxAgeMs: INITDATA_MAX_AGE_MS });
@@ -242,7 +251,8 @@ app.use('/ledger', (req, res, next) => {
   req.telegramUser = result.user;
   req.telegramUserId = result.userId;
   next();
-});
+}
+app.use('/ledger', telegramAuth);
 
 // Returns the authoritative player id for a write request. With a verified
 // Telegram session the id comes from the signature (a body id that disagrees
@@ -376,6 +386,75 @@ app.post('/ledger/grant', (req, res) => {
   }
 });
 
+// ============================================================
+// Telegram Stars payments — real-money-adjacent purchases
+// ============================================================
+// The client requests an invoice (Telegram-verified identity), opens it
+// in the Mini App, and Telegram delivers payment confirmation to the
+// webhook below. Money-in never originates from the client.
+
+// Create a Stars invoice for a package purchase.
+app.post('/api/create-invoice', telegramAuth, async (req, res) => {
+  if (!BOT_TOKEN) return res.status(503).json({ error: 'بوابة الدفع غير مفعّلة', code: 'unavailable' });
+  if (!req.telegramUserId) return res.status(401).json({ error: 'هوية غير موثّقة', code: 'unauthorized' });
+  const b = req.body || {};
+  const pkg = STAR_PACKAGES.find((p) => p.id === b.packageId);
+  if (!pkg) return res.status(400).json({ error: 'حزمة غير معروفة', code: 'invalid' });
+  try {
+    const result = await createInvoiceLink(BOT_TOKEN, pkg, req.telegramUserId);
+    res.json({ invoiceLink: result, packageId: pkg.id, starsAmount: pkg.starsAmount, bonusStars: pkg.bonusStars });
+  } catch (err) {
+    console.error('[payments] createInvoiceLink failed:', err.message);
+    res.status(502).json({ error: 'تعذر إنشاء الفاتورة حالياً', code: 'gateway' });
+  }
+});
+
+// Telegram payment webhook: pre_checkout_query approval + successful_payment
+// crediting. Verified by the webhook secret token when configured.
+app.post('/webhook', async (req, res) => {
+  const update = req.body || {};
+  const secret = req.get('x-telegram-bot-api-secret-token') || '';
+  if (WEBHOOK_SECRET && secret !== WEBHOOK_SECRET) {
+    return res.status(401).json({ ok: false });
+  }
+
+  // 1) Pre-checkout: approve only real, correctly-priced invoices.
+  const pcq = update.pre_checkout_query;
+  if (pcq) {
+    const problem = validatePayment({ payload: pcq.invoice_payload, currency: pcq.currency, totalAmount: pcq.total_amount });
+    try {
+      await botApi(BOT_TOKEN, 'answerPreCheckoutQuery', {
+        pre_checkout_query_id: pcq.id,
+        ok: !problem,
+        ...(problem ? { error_message: problem } : {})
+      });
+    } catch (err) {
+      console.error('[payments] answerPreCheckoutQuery failed:', err.message);
+    }
+    return res.json({ ok: true });
+  }
+
+  // 2) Successful payment: credit the buyer idempotently (topupId = payload).
+  const sp = update.message && update.message.successful_payment;
+  if (sp) {
+    try {
+      const problem = validatePayment({ payload: sp.invoice_payload, currency: sp.currency, totalAmount: sp.total_amount });
+      const parsed = parsePayload(sp.invoice_payload);
+      if (problem || !parsed) {
+        console.warn('[payments] rejected successful_payment:', problem || 'bad payload');
+      } else {
+        // Credit stars + bonus once; a redelivered update replays safely.
+        ledger.topup({ topupId: sp.invoice_payload, playerId: parsed.userId, amount: parsed.pkg.starsAmount + parsed.pkg.bonusStars });
+        console.log(`[payments] credited ${parsed.pkg.starsAmount + parsed.pkg.bonusStars} stars to ${parsed.userId} (${parsed.packageId})`);
+      }
+    } catch (err) {
+      console.error('[payments] crediting failed:', err.message);
+    }
+  }
+
+  res.json({ ok: true });
+});
+
 // ---- PeerJS signaling (WebRTC handshake only) ----
 // Mounted at the root so the client's default path "/" resolves to the
 // "/peerjs" WebSocket endpoint and "/peerjs/id" HTTP id endpoint.
@@ -466,3 +545,15 @@ setInterval(() => {
 server.listen(PORT, HOST, () => {
   log(`matchmaking + signaling listening on ${HOST}:${PORT}`);
 });
+
+// Register the Telegram payment webhook on boot (payments + pre-checkout
+// only). Fire-and-forget: a failure here must never crash the match server.
+if (BOT_TOKEN && WEBHOOK_URL) {
+  botApi(BOT_TOKEN, 'setWebhook', {
+    url: WEBHOOK_URL,
+    ...(WEBHOOK_SECRET ? { secret_token: WEBHOOK_SECRET } : {}),
+    allowed_updates: ['message', 'pre_checkout_query']
+  })
+    .then(() => console.log(`[payments] webhook registered at ${WEBHOOK_URL}`))
+    .catch((err) => console.warn('[payments] setWebhook failed:', err.message));
+}

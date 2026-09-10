@@ -10,6 +10,7 @@
 interface TelegramWebAppLike {
   initData?: string;
   initDataUnsafe?: { user?: { id?: number; first_name?: string; last_name?: string; username?: string } };
+  openInvoice?: (url: string, callback?: (status: 'paid' | 'cancelled' | 'failed' | 'pending') => void) => void;
 }
 
 function telegramWebApp(): TelegramWebAppLike | undefined {
@@ -25,4 +26,9 @@ function telegramWebApp(): TelegramWebAppLike | undefined {
 export function getTelegramInitData(): string {
   const raw = telegramWebApp()?.initData;
   return typeof raw === 'string' ? raw : '';
+}
+
+/** The Mini App bridge (undefined in a plain browser). */
+export function getTelegramWebApp(): TelegramWebAppLike | undefined {
+  return telegramWebApp();
 }
