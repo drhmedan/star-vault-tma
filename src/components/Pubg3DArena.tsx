@@ -8,9 +8,10 @@ import { buildMapEnvironment, MAP_CATALOG } from '../game3d/mapRegistry';
 import { createSoldierMesh, createWeaponViewModel, WeaponViewModel } from '../game3d/worldBuilder';
 import {
   CoverObstacle3D, MapId, WeaponSlotId, WeaponType, WeaponDef, WeaponState,
-  GrenadeType, LocomotionState, LootItem3D, SurfaceType
+  GrenadeType, LocomotionState, LootItem3D, SurfaceType, SoldierMesh
 } from '../game3d/types3d';
 import { multiplayer, ConnectionStatus } from '../services/multiplayer';
+import { MatchInfo } from '../services/matchmaking';
 import { sound } from '../audio/soundEngine';
 import { tgHaptics } from '../services/telegramHaptics';
 
@@ -119,9 +120,11 @@ function lineBlocked(obstacles: CoverObstacle3D[], from: THREE.Vector3, to: THRE
 interface Pubg3DArenaProps {
   user: UserProfile;
   roomCode: string;
-  mode: 'host' | 'join' | 'ai';
+  mode: 'host' | 'join' | 'ai' | 'matchmade';
   stakeStars: number;
   mapId?: MapId;
+  /** Matchmade room metadata (human roster + bot fill count). */
+  matchInfo?: MatchInfo;
   onExit: () => void;
   onMatchComplete: (won: boolean, trophiesDelta: number, dustDelta: number, starsDelta: number) => void;
 }
@@ -153,7 +156,10 @@ interface PlayerState {
   camHeight: number;
 }
 
-interface BotState {
+interface EnemyState {
+  id: number;
+  name: string;
+  isHuman: boolean;
   pos: THREE.Vector3; vel: THREE.Vector3;
   yaw: number;
   hp: number; armor: number;
@@ -169,6 +175,11 @@ interface BotState {
   ammo: number; reloadingUntil: number;
   accuracy: number;
   weapon: WeaponType;
+}
+
+interface EnemyUnit {
+  state: EnemyState;
+  soldier: SoldierMesh;
 }
 
 interface Proj {
@@ -220,7 +231,7 @@ interface EngineApi {
 let floatId = 0;
 
 export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
-  user, roomCode, mode, stakeStars, mapId = 'warzone', onExit, onMatchComplete
+  user, roomCode, mode, stakeStars, mapId = 'warzone', matchInfo, onExit, onMatchComplete
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
@@ -253,19 +264,6 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     camHeight: 0
   });
 
-  const bRef = useRef<BotState>({
-    pos: new THREE.Vector3(), vel: new THREE.Vector3(), yaw: 0,
-    hp: 100, armor: 0, alive: true,
-    state: 'patrol', stateT: 0,
-    lastKnown: new THREE.Vector3(), spotted: false,
-    lastFire: 0, burstCount: 0, burstPause: 0,
-    lastGrenade: 0, dodgeDir: 1,
-    patrolTarget: new THREE.Vector3(), pauseT: 0,
-    ammo: 30, reloadingUntil: 0,
-    accuracy: 0.5,
-    weapon: 'ak47'
-  });
-
   const keysRef = useRef<Set<string>>(new Set());
   const moveVecRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const lookTouchRef = useRef<{ x: number; y: number } | null>(null);
@@ -289,7 +287,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     reloadProgress: 0
   });
   const [connStatus, setConnStatus] = useState<ConnectionStatus>('connecting');
-  const [opponentName, setOpponentName] = useState<string>(mode === 'ai' ? 'بوت تكتيكي' : 'في انتظار الخصم…');
+  const [opponentName, setOpponentName] = useState<string>(
+    mode === 'ai' ? 'بوت تكتيكي'
+      : mode === 'matchmade'
+        ? (matchInfo?.players.find((pl) => pl.id !== user.id)?.name ?? 'معركة البوتات')
+        : 'في انتظار الخصم…'
+  );
   const [gameOver, setGameOver] = useState<GameResult>(null);
   const [isLocked, setIsLocked] = useState(false);
   const [damageNumbers, setDamageNumbers] = useState<FloatingText[]>([]);
@@ -357,8 +360,58 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
     const playerSoldier = createSoldierMesh(false);
     scene.add(playerSoldier.root);
-    const botSoldier = createSoldierMesh(true);
-    scene.add(botSoldier.root);
+
+    // ---- Enemy roster ----------------------------------------------------
+    // Every match is "you + up to 7 enemies". A matchmade room carries one
+    // human opponent (P2P) plus a bot fill; private rooms are 1v1; AI
+    // training is a single bot. Bots are simulated locally by every client.
+    const makeEnemy = (id: number, name: string, isHuman: boolean, pos: THREE.Vector3): EnemyUnit => {
+      const state: EnemyState = {
+        id, name, isHuman, pos: pos.clone(), vel: new THREE.Vector3(), yaw: 0,
+        hp: 100, armor: 0, alive: true,
+        state: 'patrol', stateT: 0,
+        lastKnown: new THREE.Vector3(), spotted: false,
+        lastFire: 0, burstCount: 0, burstPause: 0,
+        lastGrenade: 0, dodgeDir: Math.random() > 0.5 ? 1 : -1,
+        patrolTarget: new THREE.Vector3(), pauseT: 0,
+        ammo: 30, reloadingUntil: 0,
+        accuracy: 0.5,
+        weapon: 'ak47'
+      };
+      const soldier = createSoldierMesh(true);
+      soldier.root.position.copy(pos);
+      scene.add(soldier.root);
+      return { state, soldier };
+    };
+
+    const scatterSpawn = (index: number): THREE.Vector3 => {
+      const ang = (index / 8) * Math.PI * 2 + 0.6;
+      const r = 52 + (index % 3) * 11;
+      const x = THREE.MathUtils.clamp(Math.cos(ang) * r, -env.bounds + 10, env.bounds - 10);
+      const z = THREE.MathUtils.clamp(Math.sin(ang) * r, -env.bounds + 10, env.bounds - 10);
+      return new THREE.Vector3(x, getHeightAt(x, z), z);
+    };
+
+    const enemyUnits: EnemyUnit[] = [];
+    const rosterHumans = matchInfo ? matchInfo.players.filter((pl) => pl.id !== user.id) : [];
+    const fillBots = matchInfo ? Math.max(0, matchInfo.fillBots) : 0;
+    let spawnIndex = 0;
+    if (mode === 'ai') {
+      enemyUnits.push(makeEnemy(-1, 'بوت تكتيكي', false, env.spawnB));
+    } else if (mode === 'host' || mode === 'join') {
+      enemyUnits.push(makeEnemy(0, 'في انتظار الخصم…', true, env.spawnB));
+    } else {
+      // Matchmade: one human opponent (if matched) + bot fill up to 8 fighters.
+      const opp = rosterHumans[0];
+      if (opp) {
+        enemyUnits.push(makeEnemy(opp.id, opp.name || 'خصم', true, env.spawnB));
+        spawnIndex = 1;
+      }
+      for (let i = 0; i < fillBots; i++) {
+        enemyUnits.push(makeEnemy(-(i + 1), `بوت ${i + 1}`, false, scatterSpawn(spawnIndex + i)));
+      }
+    }
+    const hasHumanOpponent = enemyUnits.some((u) => u.state.isHuman);
 
     let viewmodel: WeaponViewModel | null = createWeaponViewModel(WEAPONS.ak47.type);
     viewmodel.group.visible = false;
@@ -366,10 +419,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     scene.add(camera);
 
     const p = pRef.current;
-    const b = bRef.current;
     p.pos.copy(env.spawnA);
     p.yaw = Math.PI / 4;
-    b.pos.copy(env.spawnB);
 
     // ---- pools ----
     const tracerPool: THREE.Line[] = [];
@@ -532,43 +583,41 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       }
     }
 
-    function damageBot(dmg: number, headshot: boolean) {
-      if (!b.alive || gameOverRef.current) return;
+    function damageEnemy(enemy: EnemyState, soldier: SoldierMesh, dmg: number, headshot: boolean) {
+      if (!enemy.alive || gameOverRef.current) return;
       let absorbed = 0;
-      if (b.armor > 0) { absorbed = Math.min(b.armor, Math.round(dmg * 0.5)); b.armor -= absorbed; }
-      b.hp = Math.max(0, b.hp - (dmg - absorbed));
+      if (enemy.armor > 0) { absorbed = Math.min(enemy.armor, Math.round(dmg * 0.5)); enemy.armor -= absorbed; }
+      enemy.hp = Math.max(0, enemy.hp - (dmg - absorbed));
       p.damageDealt += (dmg - absorbed);
       p.shotsHit += 1;
       if (headshot) { p.headshots += 1; sound.playHeadshot(); }
       else sound.playHitmarker();
       setHitmarker({ kind: headshot ? 'headshot' : 'hit', key: Date.now() });
       hitmarkerT = 0.12;
-      b.spotted = true;
-      b.lastKnown.copy(p.pos);
-      botSoldier.flashHit(headshot ? 'head' : 'body');
+      enemy.spotted = true;
+      enemy.lastKnown.copy(p.pos);
+      soldier.flashHit(headshot ? 'head' : 'body');
 
-      if (mode !== 'ai') multiplayer.sendBulletHit(999999, Math.round(dmg), currentWeapon()?.def.type || 'ak47');
+      if (enemy.isHuman) multiplayer.sendBulletHit(enemy.id, Math.round(dmg), currentWeapon()?.def.type || 'ak47');
 
-      if (b.hp <= 0) {
-        b.alive = false;
+      if (enemy.hp <= 0) {
+        enemy.alive = false;
         p.kills += 1;
         sound.playKillConfirm();
         tgHaptics.notification('success');
         setCenterMsg({ text: headshot ? 'إصابة رأس قاتلة!' : 'تم القضاء على الهدف', sub: headshot ? 'HEADSHOT' : 'ELIMINATED', key: Date.now() });
-        pushFeed(`أنت قضيت على ${mode === 'ai' ? 'البوت التكتيكي' : 'الخصم'}`, headshot ? '🎯' : '💀');
-        if (mode === 'ai') endMatch(true);
-        else { multiplayer.sendGameOver(user.id); endMatch(true); }
+        pushFeed(`أنت قضيت على ${enemy.isHuman ? 'الخصم' : enemy.name}`, headshot ? '🎯' : '💀');
+        if (enemy.isHuman) {
+          multiplayer.sendGameOver(user.id);
+          endMatch(true);
+        } else if (!enemyUnits.some((u) => u.state.alive)) {
+          endMatch(true);
+        }
       }
     }
 
     function traceShot(origin: THREE.Vector3, dir: THREE.Vector3, range: number, self: 'player' | 'bot'):
-      { hit: 'head' | 'body' | 'limb' | 'world' | 'explosive' | null; point: THREE.Vector3; dist: number; obstacle: CoverObstacle3D | null } {
-      const target = self === 'player' ? botSoldier : playerSoldier;
-      const ray = new THREE.Raycaster(origin, dir, 0, range);
-      const zones = [target.hitHead, target.hitBody, ...target.hitLimbs];
-      target.root.updateMatrixWorld(true);
-      const hits = ray.intersectObjects(zones, false);
-
+      { hit: 'head' | 'body' | 'limb' | 'world' | 'explosive' | null; point: THREE.Vector3; dist: number; obstacle: CoverObstacle3D | null; enemyIndex: number } {
       let bestT = Infinity;
       let bestObs: CoverObstacle3D | null = null;
       for (const o of obstacles) {
@@ -576,19 +625,46 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         const t = rayHitsAABB(origin, dir, o.box);
         if (t !== null && t < bestT) { bestT = t; bestObs = o; }
       }
-      if (hits.length > 0 && hits[0].distance < bestT) {
-        const obj = hits[0].object as THREE.Mesh;
-        const zone = obj.userData.isHitZone as 'head' | 'body' | 'limb' | undefined;
-        return { hit: zone ?? 'body', point: hits[0].point.clone(), dist: hits[0].distance, obstacle: null };
+
+      let bestHit: { hit: 'head' | 'body' | 'limb'; point: THREE.Vector3; dist: number } | null = null;
+      let bestEnemyIndex = -1;
+
+      if (self === 'player') {
+        for (let i = 0; i < enemyUnits.length; i++) {
+          const u = enemyUnits[i];
+          if (!u.state.alive) continue;
+          const ray = new THREE.Raycaster(origin, dir, 0, range);
+          const zones = [u.soldier.hitHead, u.soldier.hitBody, ...u.soldier.hitLimbs];
+          u.soldier.root.updateMatrixWorld(true);
+          const hits = ray.intersectObjects(zones, false);
+          if (hits.length > 0 && hits[0].distance < bestT) {
+            const obj = hits[0].object as THREE.Mesh;
+            const zone = obj.userData.isHitZone as 'head' | 'body' | 'limb' | undefined;
+            bestHit = { hit: zone ?? 'body', point: hits[0].point.clone(), dist: hits[0].distance };
+            bestEnemyIndex = i;
+          }
+        }
+      } else {
+        const ray = new THREE.Raycaster(origin, dir, 0, range);
+        const zones = [playerSoldier.hitHead, playerSoldier.hitBody, ...playerSoldier.hitLimbs];
+        playerSoldier.root.updateMatrixWorld(true);
+        const hits = ray.intersectObjects(zones, false);
+        if (hits.length > 0 && hits[0].distance < bestT) {
+          const obj = hits[0].object as THREE.Mesh;
+          const zone = obj.userData.isHitZone as 'head' | 'body' | 'limb' | undefined;
+          bestHit = { hit: zone ?? 'body', point: hits[0].point.clone(), dist: hits[0].distance };
+        }
       }
+
+      if (bestHit) return { ...bestHit, obstacle: null, enemyIndex: bestEnemyIndex };
       if (bestObs) {
         const point = origin.clone().addScaledVector(dir, bestT);
-        return { hit: bestObs.explosive ? 'explosive' : 'world', point, dist: bestT, obstacle: bestObs };
+        return { hit: bestObs.explosive ? 'explosive' : 'world', point, dist: bestT, obstacle: bestObs, enemyIndex: -1 };
       }
       const point = origin.clone().addScaledVector(dir, range);
       const gh = getHeightAt(point.x, point.z);
-      if (point.y < gh) { point.y = gh; return { hit: 'world', point, dist: point.distanceTo(origin), obstacle: null }; }
-      return { hit: null, point, dist: range, obstacle: null };
+      if (point.y < gh) { point.y = gh; return { hit: 'world', point, dist: point.distanceTo(origin), obstacle: null, enemyIndex: -1 }; }
+      return { hit: null, point, dist: range, obstacle: null, enemyIndex: -1 };
     }
 
     function muzzleWorld(): THREE.Vector3 {
@@ -647,8 +723,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       tgHaptics.impact('heavy');
       const dToP = pos.distanceTo(p.pos);
       if (dToP < radius + 2) damagePlayer(Math.round(90 * Math.max(0.15, 1 - dToP / (radius + 2))), pos);
-      const dToB = pos.distanceTo(b.pos);
-      if (dToB < radius + 2) damageBot(Math.round(120 * Math.max(0.15, 1 - dToB / (radius + 2))), dToB < 2.5);
+      for (const u of enemyUnits) {
+        if (!u.state.alive) continue;
+        const dToE = pos.distanceTo(u.state.pos);
+        if (dToE < radius + 2) damageEnemy(u.state, u.soldier, Math.round(120 * Math.max(0.15, 1 - dToE / (radius + 2))), dToE < 2.5);
+      }
     }
 
     function fireShot() {
@@ -735,11 +814,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         line.geometry.setFromPoints([muzzlePos.clone(), hit.point.clone()]);
         activeTracers.push({ line, ttl: 0.07 });
 
-        if (hit.hit === 'head' || hit.hit === 'body' || hit.hit === 'limb') {
+        if ((hit.hit === 'head' || hit.hit === 'body' || hit.hit === 'limb') && hit.enemyIndex >= 0) {
           const dmg = w.def.damageMin + Math.random() * (w.def.damageMax - w.def.damageMin);
           const headshot = hit.hit === 'head';
           const total = headshot ? dmg * w.def.headshotMultiplier : hit.hit === 'limb' ? dmg * 0.7 : dmg;
-          damageBot(total, headshot);
+          damageEnemy(enemyUnits[hit.enemyIndex].state, enemyUnits[hit.enemyIndex].soldier, total, headshot);
           spawnParticles(hit.point, headshot ? 10 : 6, 0xdc2626, 5, 9, 0.4);
           pushDamageNumber(hit.point, camera, renderer.domElement, `-${Math.round(total)}`, headshot);
         } else if (hit.hit === 'explosive' && hit.obstacle) {
@@ -845,42 +924,53 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     // ============================================================
     // Networking
     // ============================================================
+    const findHumanEnemy = (senderId?: number): EnemyUnit | undefined =>
+      enemyUnits.find((u) => u.state.isHuman && (senderId === undefined || u.state.id === senderId || u.state.id === 0));
+
     multiplayer.init(
       user.id,
       (msg) => {
         if (msg.type === 'JOIN_ROOM') {
+          const opp = findHumanEnemy(msg.senderId);
+          if (opp && typeof msg.senderId === 'number') opp.state.id = msg.senderId;
           setOpponentName(msg.payload.playerName || 'لاعب متصل');
           setConnStatus('connected');
         } else if (msg.type === 'SYNC_SHOOTER_STATE') {
           const s = msg.payload;
-          if (s && !bRef.current.alive) return;
-          if (s) {
-            bRef.current.pos.set(s.x, s.y, s.z);
-            bRef.current.yaw = s.yaw;
-            botSoldier.root.position.set(s.x, s.y, s.z);
-            botSoldier.root.rotation.y = s.yaw;
+          const opp = findHumanEnemy(msg.senderId);
+          if (s && opp && opp.state.alive) {
+            opp.state.pos.set(s.x, s.y, s.z);
+            opp.state.yaw = s.yaw;
+            opp.soldier.root.position.set(s.x, s.y, s.z);
+            opp.soldier.root.rotation.y = s.yaw;
           }
         } else if (msg.type === 'SHOOT_BULLETS') {
-          const dist = camera.position.distanceTo(botSoldier.root.position);
-          const toBot = botSoldier.root.position.clone().sub(camera.position).normalize();
+          const opp = findHumanEnemy(msg.senderId);
+          if (!opp) return;
+          const pos = opp.soldier.root.position;
+          const dist = camera.position.distanceTo(pos);
+          const toBot = pos.clone().sub(camera.position).normalize();
           const camDir = new THREE.Vector3();
           camera.getWorldDirection(camDir);
           const pan = toBot.clone().cross(camDir).y * 2;
           const rw = (msg.payload?.bullets?.[0]?.weaponType || 'ak47') as WeaponType;
-          if (bRef.current.weapon !== rw) {
-            bRef.current.weapon = rw;
-            botSoldier.setWeapon(rw);
+          if (opp.state.weapon !== rw) {
+            opp.state.weapon = rw;
+            opp.soldier.setWeapon(rw);
           }
           sound.playSpatialShot(rw, dist, pan);
-          botSoldier.setMuzzleFlash(true);
-          window.setTimeout(() => botSoldier.setMuzzleFlash(false), 60);
-          const from = botSoldier.muzzle.getWorldPosition(new THREE.Vector3());
+          opp.soldier.setMuzzleFlash(true);
+          window.setTimeout(() => opp.soldier.setMuzzleFlash(false), 60);
+          const from = opp.soldier.muzzle.getWorldPosition(new THREE.Vector3());
           const to = camera.position.clone().add(new THREE.Vector3(0, 0.5, 0));
           const line = acquireTracer(0xf87171);
           line.geometry.setFromPoints([from, to]);
           activeTracers.push({ line, ttl: 0.08 });
         } else if (msg.type === 'BULLET_HIT') {
-          if (msg.payload.victimId === user.id) damagePlayer(msg.payload.damage, botSoldier.root.position);
+          if (msg.payload.victimId === user.id) {
+            const opp = findHumanEnemy(msg.senderId);
+            damagePlayer(msg.payload.damage, opp ? opp.soldier.root.position : undefined);
+          }
         } else if (msg.type === 'LOOT_TAKEN') {
           const taken = lootItems.find((l) => l.id === msg.payload.lootId);
           if (taken) { taken.isCollected = true; taken.setCollected(true); }
@@ -894,162 +984,174 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         if (peerName) setOpponentName(peerName);
       }
     );
-    if (mode === 'host') multiplayer.createRoom(roomCode, user.firstName);
-    else if (mode === 'join') multiplayer.joinRoom(roomCode, user.firstName);
-    else multiplayer.startAiMatch();
+    if (mode === 'host' || (mode === 'matchmade' && hasHumanOpponent && matchInfo && matchInfo.hostId === user.id)) {
+      multiplayer.createRoom(roomCode, user.firstName);
+    } else if (mode === 'join' || (mode === 'matchmade' && hasHumanOpponent && matchInfo && matchInfo.hostId !== user.id)) {
+      multiplayer.joinRoom(roomCode, user.firstName);
+    } else if (mode === 'matchmade') {
+      multiplayer.startSoloMatch();
+    } else {
+      multiplayer.startAiMatch();
+    }
 
     // ============================================================
     // AI
     // ============================================================
     function aiThink(dt: number, now: number) {
-      if (!b.alive || mode !== 'ai') return;
-      const dist = b.pos.distanceTo(p.pos);
-      const angToPlayer = Math.atan2(p.pos.x - b.pos.x, p.pos.z - b.pos.z);
-      b.stateT += dt;
+      // Every bot runs its own brain; human enemies are driven by the network.
+      for (const u of enemyUnits) {
+        if (u.state.isHuman || !u.state.alive) continue;
+        const b = u.state;
+        const botSoldier = u.soldier;
 
-      const eyeB = b.pos.clone().add(new THREE.Vector3(0, 1.5, 0));
-      const eyeP = p.pos.clone().add(new THREE.Vector3(0, 1.4, 0));
-      const canSee = !lineBlocked(obstacles, eyeB, eyeP);
-      if (canSee && dist < 130) { b.spotted = true; b.lastKnown.copy(p.pos); }
+        const dist = b.pos.distanceTo(p.pos);
+        const angToPlayer = Math.atan2(p.pos.x - b.pos.x, p.pos.z - b.pos.z);
+        b.stateT += dt;
 
-      const hpPct = b.hp / 100;
-      if (b.stateT > 0.9 + Math.random() * 1.2) {
-        b.stateT = 0;
-        b.dodgeDir = Math.random() > 0.5 ? 1 : -1;
-        if (!b.spotted && dist > 60) b.state = 'patrol';
-        else if (hpPct < 0.25) b.state = 'retreat';
-        else if (hpPct < 0.5 && Math.random() < 0.35) b.state = 'take_cover';
-        else if (dist > 55) b.state = 'hunt';
-        else if (dist > 24) b.state = Math.random() > 0.45 ? 'flank' : 'engage';
-        else if (hpPct < 0.3) b.state = 'retreat';
-        else if (p.reloading || p.hp < 30) b.state = 'push';
-        else b.state = 'engage';
-      }
+        const eyeB = b.pos.clone().add(new THREE.Vector3(0, 1.5, 0));
+        const eyeP = p.pos.clone().add(new THREE.Vector3(0, 1.4, 0));
+        const canSee = !lineBlocked(obstacles, eyeB, eyeP);
+        if (canSee && dist < 130) { b.spotted = true; b.lastKnown.copy(p.pos); }
 
-      const faceAngle = b.state === 'retreat' ? angToPlayer + Math.PI : angToPlayer;
-      const rotSpeed = dist < 15 ? 14 : 9;
-      b.yaw += (faceAngle - b.yaw) * Math.min(1, dt * rotSpeed);
-      botSoldier.root.rotation.y = b.yaw;
+        const hpPct = b.hp / 100;
+        if (b.stateT > 0.9 + Math.random() * 1.2) {
+          b.stateT = 0;
+          b.dodgeDir = Math.random() > 0.5 ? 1 : -1;
+          if (!b.spotted && dist > 60) b.state = 'patrol';
+          else if (hpPct < 0.25) b.state = 'retreat';
+          else if (hpPct < 0.5 && Math.random() < 0.35) b.state = 'take_cover';
+          else if (dist > 55) b.state = 'hunt';
+          else if (dist > 24) b.state = Math.random() > 0.45 ? 'flank' : 'engage';
+          else if (hpPct < 0.3) b.state = 'retreat';
+          else if (p.reloading || p.hp < 30) b.state = 'push';
+          else b.state = 'engage';
+        }
 
-      let speed = 0;
-      let moveAngle = angToPlayer;
-      switch (b.state) {
-        case 'patrol': {
-          if (b.pauseT > 0) { b.pauseT -= dt; speed = 0; }
-          else if (b.pos.distanceTo(b.patrolTarget) < 3 || b.patrolTarget.lengthSq() === 0) {
-            const a = Math.random() * Math.PI * 2;
-            b.patrolTarget.set(
-              Math.max(-90, Math.min(90, b.pos.x + Math.cos(a) * (20 + Math.random() * 50))),
-              b.pos.y,
-              Math.max(-90, Math.min(90, b.pos.z + Math.sin(a) * (20 + Math.random() * 50)))
-            );
-            b.pauseT = 0.8 + Math.random() * 1.8;
-          } else {
-            speed = 4.2;
-            moveAngle = Math.atan2(b.patrolTarget.x - b.pos.x, b.patrolTarget.z - b.pos.z);
+        const faceAngle = b.state === 'retreat' ? angToPlayer + Math.PI : angToPlayer;
+        const rotSpeed = dist < 15 ? 14 : 9;
+        b.yaw += (faceAngle - b.yaw) * Math.min(1, dt * rotSpeed);
+        botSoldier.root.rotation.y = b.yaw;
+
+        let speed = 0;
+        let moveAngle = angToPlayer;
+        switch (b.state) {
+          case 'patrol': {
+            if (b.pauseT > 0) { b.pauseT -= dt; speed = 0; }
+            else if (b.pos.distanceTo(b.patrolTarget) < 3 || b.patrolTarget.lengthSq() === 0) {
+              const a = Math.random() * Math.PI * 2;
+              b.patrolTarget.set(
+                Math.max(-90, Math.min(90, b.pos.x + Math.cos(a) * (20 + Math.random() * 50))),
+                b.pos.y,
+                Math.max(-90, Math.min(90, b.pos.z + Math.sin(a) * (20 + Math.random() * 50)))
+              );
+              b.pauseT = 0.8 + Math.random() * 1.8;
+            } else {
+              speed = 4.2;
+              moveAngle = Math.atan2(b.patrolTarget.x - b.pos.x, b.patrolTarget.z - b.pos.z);
+            }
+            break;
           }
-          break;
+          case 'hunt': speed = 7.4; moveAngle = angToPlayer; break;
+          case 'engage': speed = 4.6; moveAngle = angToPlayer + b.dodgeDir * 0.4; break;
+          case 'flank': speed = 5.8; moveAngle = angToPlayer + b.dodgeDir * (Math.PI * 0.42); break;
+          case 'take_cover': speed = 5.2; moveAngle = angToPlayer + Math.PI * 0.5 * b.dodgeDir; break;
+          case 'push': speed = 7.6; moveAngle = angToPlayer; break;
+          case 'retreat': speed = 5.4; moveAngle = angToPlayer + Math.PI + b.dodgeDir * 0.6; break;
+          case 'heal': speed = 0; break;
         }
-        case 'hunt': speed = 7.4; moveAngle = angToPlayer; break;
-        case 'engage': speed = 4.6; moveAngle = angToPlayer + b.dodgeDir * 0.4; break;
-        case 'flank': speed = 5.8; moveAngle = angToPlayer + b.dodgeDir * (Math.PI * 0.42); break;
-        case 'take_cover': speed = 5.2; moveAngle = angToPlayer + Math.PI * 0.5 * b.dodgeDir; break;
-        case 'push': speed = 7.6; moveAngle = angToPlayer; break;
-        case 'retreat': speed = 5.4; moveAngle = angToPlayer + Math.PI + b.dodgeDir * 0.6; break;
-        case 'heal': speed = 0; break;
-      }
 
-      if ((b.state === 'engage' || b.state === 'flank' || b.state === 'push') && Math.sin(now * 0.007) > 0.6) {
-        moveAngle += b.dodgeDir * 0.7;
-      }
-
-      if (speed > 0) {
-        const desired = new THREE.Vector3(b.pos.x + Math.sin(moveAngle) * speed * dt, b.pos.y, b.pos.z + Math.cos(moveAngle) * speed * dt);
-        const blockedAt = (v: THREE.Vector3) => {
-          const box = new THREE.Box3(new THREE.Vector3(v.x - 0.5, v.y, v.z - 0.5), new THREE.Vector3(v.x + 0.5, v.y + 1.9, v.z + 0.5));
-          for (const o of obstacles) if (o.blocksMovement && o.box.intersectsBox(box)) return true;
-          return false;
-        };
-        if (blockedAt(desired)) {
-          const alt1 = new THREE.Vector3(b.pos.x + Math.sin(moveAngle + 1.2) * speed * dt, b.pos.y, b.pos.z + Math.cos(moveAngle + 1.2) * speed * dt);
-          const alt2 = new THREE.Vector3(b.pos.x + Math.sin(moveAngle - 1.2) * speed * dt, b.pos.y, b.pos.z + Math.cos(moveAngle - 1.2) * speed * dt);
-          if (!blockedAt(alt1)) b.pos.copy(alt1);
-          else if (!blockedAt(alt2)) b.pos.copy(alt2);
-        } else b.pos.copy(desired);
-        b.pos.x = Math.max(-96, Math.min(96, b.pos.x));
-        b.pos.z = Math.max(-96, Math.min(96, b.pos.z));
-        b.pos.y = getHeightAt(b.pos.x, b.pos.z);
-      }
-
-      botSoldier.root.position.copy(b.pos);
-
-      // ---- Firing ----
-      if (b.reloadingUntil > now) return;
-      if (b.ammo <= 0) { b.reloadingUntil = now + 2200; b.ammo = 30; sound.playReload(); return; }
-
-      const longRange = dist > 60;
-      const accBase = longRange ? 0.15 : dist < 15 ? 0.7 : 0.4;
-      const fireInterval = longRange ? 900 : dist < 12 ? 150 : 260;
-
-      // Bot carries a long gun at range, a rifle up close.
-      const botWep: WeaponType = longRange ? 'awm' : 'ak47';
-      if (b.weapon !== botWep) {
-        b.weapon = botWep;
-        botSoldier.setWeapon(botWep);
-      }
-
-      if (b.spotted && dist < 110 && now - b.lastFire > fireInterval) {
-        b.lastFire = now;
-        b.burstCount += 1;
-        if (b.burstCount > (3 + Math.floor(Math.random() * 3))) {
-          b.burstCount = 0;
-          b.lastFire = now + 500 + Math.random() * 500;
+        if ((b.state === 'engage' || b.state === 'flank' || b.state === 'push') && Math.sin(now * 0.007 + b.id) > 0.6) {
+          moveAngle += b.dodgeDir * 0.7;
         }
-        b.ammo -= 1;
 
-        botSoldier.setMuzzleFlash(true);
-        window.setTimeout(() => botSoldier.setMuzzleFlash(false), 55);
-        const dist2 = camera.position.distanceTo(b.pos);
-        const toBot = b.pos.clone().sub(camera.position).normalize();
-        const camDir = new THREE.Vector3();
-        camera.getWorldDirection(camDir);
-        const pan = toBot.clone().cross(camDir).y * 2;
-        sound.playSpatialShot(botWep, dist2, pan);
-
-        const spreadRad = (1 - accBase) * 0.09 + (p.crouched ? 0.02 : 0) + (p.prone ? 0.03 : 0);
-        const from = botSoldier.muzzle.getWorldPosition(new THREE.Vector3());
-        const aim = p.pos.clone().add(new THREE.Vector3(
-          (Math.random() - 0.5) * 2 * spreadRad * dist * 0.5,
-          1.3 + (Math.random() - 0.5) * 0.4,
-          (Math.random() - 0.5) * 2 * spreadRad * dist * 0.5
-        ));
-        const dir = aim.sub(from).normalize();
-        const line = acquireTracer(0xf87171);
-        line.geometry.setFromPoints([from.clone(), aim.clone()]);
-        activeTracers.push({ line, ttl: 0.09 });
-
-        if (canSee && Math.random() < accBase) {
-          const dmg = 7 + Math.floor(Math.random() * 9);
-          const headshot = Math.random() < 0.12;
-          damagePlayer(headshot ? dmg * 2.5 : dmg, b.pos);
-          if (headshot) pushFeed('أصابك البوت في الرأس!', '🎯');
-        } else if (Math.random() < 0.3) {
-          sound.playWhiz();
+        if (speed > 0) {
+          const desired = new THREE.Vector3(b.pos.x + Math.sin(moveAngle) * speed * dt, b.pos.y, b.pos.z + Math.cos(moveAngle) * speed * dt);
+          const blockedAt = (v: THREE.Vector3) => {
+            const box = new THREE.Box3(new THREE.Vector3(v.x - 0.5, v.y, v.z - 0.5), new THREE.Vector3(v.x + 0.5, v.y + 1.9, v.z + 0.5));
+            for (const o of obstacles) if (o.blocksMovement && o.box.intersectsBox(box)) return true;
+            return false;
+          };
+          if (blockedAt(desired)) {
+            const alt1 = new THREE.Vector3(b.pos.x + Math.sin(moveAngle + 1.2) * speed * dt, b.pos.y, b.pos.z + Math.cos(moveAngle + 1.2) * speed * dt);
+            const alt2 = new THREE.Vector3(b.pos.x + Math.sin(moveAngle - 1.2) * speed * dt, b.pos.y, b.pos.z + Math.cos(moveAngle - 1.2) * speed * dt);
+            if (!blockedAt(alt1)) b.pos.copy(alt1);
+            else if (!blockedAt(alt2)) b.pos.copy(alt2);
+          } else b.pos.copy(desired);
+          b.pos.x = Math.max(-96, Math.min(96, b.pos.x));
+          b.pos.z = Math.max(-96, Math.min(96, b.pos.z));
+          b.pos.y = getHeightAt(b.pos.x, b.pos.z);
         }
-      }
 
-      // ---- Grenade at player behind cover ----
-      if (b.spotted && dist > 10 && dist < 40 && !canSee && now - b.lastGrenade > 9000 + Math.random() * 5000) {
-        b.lastGrenade = now;
-        const grp = new THREE.Group();
-        grp.add(new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshStandardMaterial({ color: 0x4a5f3a, roughness: 0.6 })));
-        grp.position.copy(b.pos).add(new THREE.Vector3(0, 1.6, 0));
-        scene.add(grp);
-        const toTarget = p.pos.clone().sub(b.pos);
-        toTarget.y = 0;
-        const d = Math.max(1, toTarget.length());
-        const vel = toTarget.normalize().multiplyScalar(Math.min(16, d * 0.9)).add(new THREE.Vector3(0, 7, 0));
-        projectiles.push({ kind: 'frag', mesh: grp, vel, gravity: 12, dmg: 90, owner: 'bot', fuse: 3, bounced: false });
+        botSoldier.root.position.copy(b.pos);
+
+        // ---- Firing ----
+        if (b.reloadingUntil > now) continue;
+        if (b.ammo <= 0) { b.reloadingUntil = now + 2200; b.ammo = 30; sound.playReload(); continue; }
+
+        const longRange = dist > 60;
+        const accBase = longRange ? 0.15 : dist < 15 ? 0.7 : 0.4;
+        const fireInterval = longRange ? 900 : dist < 12 ? 150 : 260;
+
+        // Bot carries a long gun at range, a rifle up close.
+        const botWep: WeaponType = longRange ? 'awm' : 'ak47';
+        if (b.weapon !== botWep) {
+          b.weapon = botWep;
+          botSoldier.setWeapon(botWep);
+        }
+
+        if (b.spotted && dist < 110 && now - b.lastFire > fireInterval) {
+          b.lastFire = now;
+          b.burstCount += 1;
+          if (b.burstCount > (3 + Math.floor(Math.random() * 3))) {
+            b.burstCount = 0;
+            b.lastFire = now + 500 + Math.random() * 500;
+          }
+          b.ammo -= 1;
+
+          botSoldier.setMuzzleFlash(true);
+          window.setTimeout(() => botSoldier.setMuzzleFlash(false), 55);
+          const dist2 = camera.position.distanceTo(b.pos);
+          const toBot = b.pos.clone().sub(camera.position).normalize();
+          const camDir = new THREE.Vector3();
+          camera.getWorldDirection(camDir);
+          const pan = toBot.clone().cross(camDir).y * 2;
+          sound.playSpatialShot(botWep, dist2, pan);
+
+          const spreadRad = (1 - accBase) * 0.09 + (p.crouched ? 0.02 : 0) + (p.prone ? 0.03 : 0);
+          const from = botSoldier.muzzle.getWorldPosition(new THREE.Vector3());
+          const aim = p.pos.clone().add(new THREE.Vector3(
+            (Math.random() - 0.5) * 2 * spreadRad * dist * 0.5,
+            1.3 + (Math.random() - 0.5) * 0.4,
+            (Math.random() - 0.5) * 2 * spreadRad * dist * 0.5
+          ));
+          const dir = aim.sub(from).normalize();
+          const line = acquireTracer(0xf87171);
+          line.geometry.setFromPoints([from.clone(), aim.clone()]);
+          activeTracers.push({ line, ttl: 0.09 });
+
+          if (canSee && Math.random() < accBase) {
+            const dmg = 7 + Math.floor(Math.random() * 9);
+            const headshot = Math.random() < 0.12;
+            damagePlayer(headshot ? dmg * 2.5 : dmg, b.pos);
+            if (headshot) pushFeed('أصابك البوت في الرأس!', '🎯');
+          } else if (Math.random() < 0.3) {
+            sound.playWhiz();
+          }
+        }
+
+        // ---- Grenade at player behind cover ----
+        if (b.spotted && dist > 10 && dist < 40 && !canSee && now - b.lastGrenade > 9000 + Math.random() * 5000) {
+          b.lastGrenade = now;
+          const grp = new THREE.Group();
+          grp.add(new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshStandardMaterial({ color: 0x4a5f3a, roughness: 0.6 })));
+          grp.position.copy(b.pos).add(new THREE.Vector3(0, 1.6, 0));
+          scene.add(grp);
+          const toTarget = p.pos.clone().sub(b.pos);
+          toTarget.y = 0;
+          const d = Math.max(1, toTarget.length());
+          const vel = toTarget.normalize().multiplyScalar(Math.min(16, d * 0.9)).add(new THREE.Vector3(0, 7, 0));
+          projectiles.push({ kind: 'frag', mesh: grp, vel, gravity: 12, dmg: 90, owner: 'bot', fuse: 3, bounced: false });
+        }
       }
     }
 
@@ -1408,8 +1510,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         if (pr.kind === 'rocket') {
           if (Math.random() < 0.7) spawnParticles(prev, 1, 0x78716c, 1.5, 0, 0.35);
           let exploded = false;
-          const targetPos = pr.owner === 'player' ? b.pos : p.pos;
-          if (pr.mesh.position.distanceTo(targetPos) < 2.0) exploded = true;
+          if (pr.owner === 'player') {
+            for (const u of enemyUnits) {
+              if (u.state.alive && pr.mesh.position.distanceTo(u.state.pos) < 2.0) { exploded = true; break; }
+            }
+          } else if (pr.mesh.position.distanceTo(p.pos) < 2.0) {
+            exploded = true;
+          }
           for (const o of obstacles) {
             if (o.blocksBullets && o.box.containsPoint(pr.mesh.position)) { exploded = true; break; }
           }
@@ -1425,20 +1532,47 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           const step = pr.vel.length() * dt;
           const rayEnd = prev.clone().add(dir.clone().multiplyScalar(step));
           let done = false;
-          const target = pr.owner === 'player' ? botSoldier : playerSoldier;
-          target.root.updateMatrixWorld(true);
-          const raycaster = new THREE.Raycaster(prev, dir, 0, step);
-          const zones = [target.hitHead, target.hitBody, ...target.hitLimbs];
-          const hits = raycaster.intersectObjects(zones, false);
-          if (hits.length > 0) {
-            const obj = hits[0].object as THREE.Mesh;
-            const zone = obj.userData.isHitZone as 'head' | 'body' | 'limb' | undefined;
-            const headshot = zone === 'head';
-            if (pr.owner === 'player') {
-              damageBot(pr.dmg * (headshot ? 2.5 : zone === 'limb' ? 0.7 : 1), headshot);
-              pushDamageNumber(hits[0].point, camera, renderer.domElement, `-${Math.round(pr.dmg * (headshot ? 2.5 : 1))}`, headshot);
-            } else damagePlayer(pr.dmg, pr.mesh.position);
-            spawnParticles(hits[0].point, headshot ? 10 : 6, 0xdc2626, 5, 9, 0.4);
+          let nearestIdx = -1;
+          let nearestHit: { point: THREE.Vector3; zone: 'head' | 'body' | 'limb' } | null = null;
+          let nearestDist = Infinity;
+          if (pr.owner === 'player') {
+            for (let i = 0; i < enemyUnits.length; i++) {
+              const u = enemyUnits[i];
+              if (!u.state.alive) continue;
+              u.soldier.root.updateMatrixWorld(true);
+              const raycaster = new THREE.Raycaster(prev, dir, 0, step);
+              const zones = [u.soldier.hitHead, u.soldier.hitBody, ...u.soldier.hitLimbs];
+              const hits = raycaster.intersectObjects(zones, false);
+              if (hits.length > 0 && hits[0].distance < nearestDist) {
+                nearestDist = hits[0].distance;
+                nearestIdx = i;
+                const obj = hits[0].object as THREE.Mesh;
+                const zone = obj.userData.isHitZone as 'head' | 'body' | 'limb' | undefined;
+                nearestHit = { point: hits[0].point.clone(), zone: zone ?? 'body' };
+              }
+            }
+          } else {
+            playerSoldier.root.updateMatrixWorld(true);
+            const raycaster = new THREE.Raycaster(prev, dir, 0, step);
+            const zones = [playerSoldier.hitHead, playerSoldier.hitBody, ...playerSoldier.hitLimbs];
+            const hits = raycaster.intersectObjects(zones, false);
+            if (hits.length > 0) {
+              nearestDist = hits[0].distance;
+              const obj = hits[0].object as THREE.Mesh;
+              const zone = obj.userData.isHitZone as 'head' | 'body' | 'limb' | undefined;
+              nearestHit = { point: hits[0].point.clone(), zone: zone ?? 'body' };
+            }
+          }
+          if (nearestHit) {
+            const headshot = nearestHit.zone === 'head';
+            if (pr.owner === 'player' && nearestIdx >= 0) {
+              const u = enemyUnits[nearestIdx];
+              damageEnemy(u.state, u.soldier, pr.dmg * (headshot ? 2.5 : nearestHit.zone === 'limb' ? 0.7 : 1), headshot);
+              pushDamageNumber(nearestHit.point, camera, renderer.domElement, `-${Math.round(pr.dmg * (headshot ? 2.5 : 1))}`, headshot);
+            } else if (pr.owner !== 'player') {
+              damagePlayer(pr.dmg, pr.mesh.position);
+            }
+            spawnParticles(nearestHit.point, headshot ? 10 : 6, 0xdc2626, 5, 9, 0.4);
             done = true;
           } else {
             for (const o of obstacles) {
@@ -1593,8 +1727,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         damagePlayer(6, p.pos.clone().add(new THREE.Vector3(Math.sin(p.yaw), 0, Math.cos(p.yaw)).multiplyScalar(-1)));
       }
 
-      if (phase === 'combat' && elapsed > totalMatch && !gameOverRef.current) endMatch(p.hp >= b.hp);
-      if (mode !== 'ai' && connStatus === 'disconnected' && phase === 'combat' && !gameOverRef.current) endMatch(true);
+      if (phase === 'combat' && elapsed > totalMatch && !gameOverRef.current) {
+        // Timer decision: with a human opponent, higher remaining HP wins; a
+        // pure bot battle is won by surviving with at least one elimination.
+        const opp = enemyUnits.find((u) => u.state.isHuman && u.state.alive);
+        endMatch(opp ? p.hp >= opp.state.hp : p.alive && p.kills >= 1);
+      }
+      if (hasHumanOpponent && connStatus === 'disconnected' && phase === 'combat' && !gameOverRef.current) endMatch(true);
 
       // ---- Player pose ----
       const soldier = playerSoldier;
@@ -1636,22 +1775,25 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       muzzleT = Math.max(0, muzzleT - dt);
       soldier.setMuzzleFlash(p.firing && muzzleT > 0 && phase === 'combat');
 
-      // ---- Bot pose ----
-      const botRig = botSoldier.rig;
-      if (b.alive) {
-        const bStride = Math.sin(now * 0.011);
-        botRig.leftLeg.rotation.x = bStride * 0.5;
-        botRig.rightLeg.rotation.x = -bStride * 0.5;
-        botRig.leftArm.rotation.x = -0.4 - bStride * 0.3;
-        botRig.rightArm.rotation.x = -0.4 + bStride * 0.3;
-        botSoldier.torso.position.y = 1.24;
-        botSoldier.head.position.y = 1.62;
-        botSoldier.torso.rotation.x = 0;
-      } else {
-        // Death ragdoll: fall flat on the back with a natural sideways tilt.
-        botSoldier.root.rotation.x = THREE.MathUtils.lerp(botSoldier.root.rotation.x, -Math.PI / 2, dt * 5);
-        botSoldier.root.rotation.z = THREE.MathUtils.lerp(botSoldier.root.rotation.z, 0.18, dt * 3);
-        botSoldier.root.position.y = getHeightAt(botSoldier.root.position.x, botSoldier.root.position.z);
+      // ---- Enemy pose (bots walk; human opponent mirrors the network) ----
+      for (const u of enemyUnits) {
+        const sol = u.soldier;
+        const rig = sol.rig;
+        if (u.state.alive) {
+          const bStride = Math.sin(now * 0.011 + u.state.id * 1.7);
+          rig.leftLeg.rotation.x = bStride * 0.5;
+          rig.rightLeg.rotation.x = -bStride * 0.5;
+          rig.leftArm.rotation.x = -0.4 - bStride * 0.3;
+          rig.rightArm.rotation.x = -0.4 + bStride * 0.3;
+          sol.torso.position.y = 1.24;
+          sol.head.position.y = 1.62;
+          sol.torso.rotation.x = 0;
+        } else {
+          // Death ragdoll: fall flat on the back with a natural sideways tilt.
+          sol.root.rotation.x = THREE.MathUtils.lerp(sol.root.rotation.x, -Math.PI / 2, dt * 5);
+          sol.root.rotation.z = THREE.MathUtils.lerp(sol.root.rotation.z, 0.18, dt * 3);
+          sol.root.position.y = getHeightAt(sol.root.position.x, sol.root.position.z);
+        }
       }
 
       // ---- Camera ----
@@ -1902,14 +2044,17 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           g.beginPath();
           g.arc(cx + safeZone.center.x * scale, cy + safeZone.center.y * scale, safeZone.radius * scale, 0, Math.PI * 2);
           g.stroke();
-          if (mode === 'ai' && b.alive) {
-            const canSee = !lineBlocked(obstacles, p.pos.clone().add(new THREE.Vector3(0, 1.5, 0)), b.pos.clone().add(new THREE.Vector3(0, 1.4, 0)));
-            if (b.spotted && (canSee || now - b.lastFire < 2000)) {
-              g.fillStyle = '#ef4444';
-              g.beginPath();
-              g.arc(cx + b.pos.x * scale, cy + b.pos.z * scale, 3, 0, Math.PI * 2);
-              g.fill();
+          for (const u of enemyUnits) {
+            if (!u.state.alive) continue;
+            const s = u.state;
+            if (!s.isHuman) {
+              const canSee = !lineBlocked(obstacles, p.pos.clone().add(new THREE.Vector3(0, 1.5, 0)), s.pos.clone().add(new THREE.Vector3(0, 1.4, 0)));
+              if (!s.spotted || (!canSee && now - s.lastFire > 2000)) continue;
             }
+            g.fillStyle = s.isHuman ? '#fb7185' : '#ef4444';
+            g.beginPath();
+            g.arc(cx + s.pos.x * scale, cy + s.pos.z * scale, 3, 0, Math.PI * 2);
+            g.fill();
           }
           g.save();
           g.translate(cx + p.pos.x * scale, cy + p.pos.z * scale);

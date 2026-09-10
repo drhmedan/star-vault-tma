@@ -1,28 +1,176 @@
-import React, { useState } from 'react';
-import { ArrowLeft, Bot, Check, Flame, LockKeyhole, Map as MapIcon, Share2, Shield, Sparkles, Swords, Zap } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Bot, Check, Flame, LockKeyhole, Map as MapIcon, Radar, Share2, Shield, Sparkles, Swords, X, Zap } from 'lucide-react';
 import { UserProfile } from '../types';
 import { sound } from '../audio/soundEngine';
 import { MapId } from '../game3d/types3d';
 import { MAP_CATALOG } from '../game3d/mapRegistry';
+import { config } from '../config';
+import { MatchInfo, MatchmakingClient } from '../services/matchmaking';
 
 interface PvPLobbyProps {
   user: UserProfile;
-  onStartMatch: (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number, mapId?: MapId) => void;
+  onStartMatch: (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId?: MapId, matchInfo?: MatchInfo) => void;
   onOpenLoadout: () => void;
 }
 
 const stakeOptions = [0, 25, 100];
+const GATHER_SECONDS = 30;
+const TOTAL_FIGHTERS = 8;
 
 export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLoadout }) => {
   const [joinCode, setJoinCode] = useState('');
   const [stakeStars, setStakeStars] = useState(0);
   const [selectedMap, setSelectedMap] = useState<MapId>('warzone');
+  const [searching, setSearching] = useState(false);
+  const [queueWaiting, setQueueWaiting] = useState(0);
+  const [secondsLeft, setSecondsLeft] = useState(GATHER_SECONDS);
+  const searchRef = useRef<MatchmakingClient | null>(null);
+  const startingRef = useRef(false);
 
   const roomCode = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
-  const start = (mode: 'host' | 'join' | 'ai', code: string, stake = stakeStars) => {
+  const start = (mode: 'host' | 'join' | 'ai' | 'matchmade', code: string, stake = stakeStars, info?: MatchInfo) => {
     sound.playClick();
-    onStartMatch(code, mode, stake, selectedMap);
+    onStartMatch(code, mode, stake, selectedMap, info);
   };
+
+  const beginSearch = () => {
+    sound.playClick();
+    startingRef.current = false;
+    setQueueWaiting(0);
+    setSecondsLeft(GATHER_SECONDS);
+    setSearching(true);
+  };
+
+  const cancelSearch = () => {
+    sound.playClick();
+    searchRef.current?.cancel();
+    searchRef.current = null;
+    setSearching(false);
+  };
+
+  const startSoloFallback = () => {
+    start('matchmade', 'SOLO-' + Math.random().toString(36).slice(2, 7).toUpperCase(), stakeStars, {
+      myId: user.id,
+      hostId: user.id,
+      players: [{ id: user.id, name: user.firstName }],
+      fillBots: TOTAL_FIGHTERS - 1
+    });
+  };
+
+  // Runs the matchmaking queue while the gathering screen is open.
+  useEffect(() => {
+    if (!searching) return;
+
+    // No live backend configured: go straight into a full bot battle.
+    if (!config.matchmakerAvailable) {
+      const t = window.setTimeout(() => {
+        if (!startingRef.current) { startingRef.current = true; startSoloFallback(); }
+      }, 1200);
+      return () => window.clearTimeout(t);
+    }
+
+    const client = new MatchmakingClient();
+    searchRef.current = client;
+    client.start(
+      { userId: user.id, name: user.firstName, teamSize: 1, mode: 'quick', url: config.matchmakerUrl },
+      (e) => {
+        if (e.type === 'status') {
+          setQueueWaiting(e.waiting);
+        } else if (e.type === 'ready') {
+          if (startingRef.current) return;
+          startingRef.current = true;
+          const info: MatchInfo = {
+            myId: user.id,
+            hostId: e.room.host,
+            players: e.room.players,
+            fillBots: e.room.fillBots
+          };
+          start('matchmade', e.room.roomCode, stakeStars, info);
+        } else if (e.type === 'error' || (e.type === 'closed' && e.reason === 'network')) {
+          if (!startingRef.current) { startingRef.current = true; startSoloFallback(); }
+        }
+      }
+    );
+
+    const tick = window.setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
+    return () => {
+      window.clearInterval(tick);
+      client.stop();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searching]);
+
+  // ============================================================
+  // Gathering screen — full-screen, premium, live queue status
+  // ============================================================
+  if (searching) {
+    return (
+      <div className="fixed inset-0 z-50 bg-[#07090f] flex flex-col items-center justify-between py-10 px-6 select-none touch-none" dir="rtl">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_30%,rgba(34,211,238,.16),transparent_55%),radial-gradient(circle_at_50%_100%,rgba(251,191,36,.08),transparent_45%)]" />
+
+        <button onClick={cancelSearch}
+          className="relative self-start flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-black text-slate-300 active:scale-95 transition-transform">
+          <X className="w-4 h-4" /> إلغاء البحث
+        </button>
+
+        <div className="relative flex flex-col items-center">
+          {/* Radar sweep */}
+          <div className="relative w-44 h-44">
+            <div className="absolute inset-0 rounded-full border border-cyan-300/20" />
+            <div className="absolute inset-4 rounded-full border border-cyan-300/15" />
+            <div className="absolute inset-9 rounded-full border border-cyan-300/10" />
+            <div className="absolute inset-0 rounded-full overflow-hidden">
+              <div className="absolute inset-0 rounded-full animate-[radar_1.8s_linear_infinite]" style={{ background: 'conic-gradient(from 0deg, rgba(34,211,238,.5), transparent 60deg)' }} />
+            </div>
+            <div className="absolute inset-0 grid place-items-center">
+              <div className="w-2.5 h-2.5 rounded-full bg-cyan-300 shadow-[0_0_22px_rgba(34,211,238,.9)] animate-ping" />
+              <div className="absolute w-2.5 h-2.5 rounded-full bg-cyan-200 shadow-[0_0_14px_rgba(34,211,238,.8)]" />
+            </div>
+            <Radar className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 text-cyan-300/25" />
+          </div>
+
+          <h2 className="mt-6 text-2xl font-black text-white text-center">جاري البحث عن خصم…</h2>
+          <p className="mt-1.5 text-xs text-slate-400 text-center">
+            {config.matchmakerAvailable
+              ? `${queueWaiting} لاعب في الطابور الآن · مباراة من ${TOTAL_FIGHTERS} مقاتلين`
+              : 'وضع التدريب — تجهيز مباراة بوتات كاملة'}
+          </p>
+
+          {/* Fighter slots filling */}
+          <div className="mt-6 flex items-center gap-1.5">
+            <div className="w-9 h-9 rounded-xl border border-cyan-300/50 bg-cyan-300/10 grid place-items-center text-sm font-black text-cyan-200">{user.firstName.charAt(0).toUpperCase()}</div>
+            {Array.from({ length: TOTAL_FIGHTERS - 1 }).map((_, i) => (
+              <div key={i} className="w-9 h-9 rounded-xl border border-white/10 bg-white/[0.04] grid place-items-center text-slate-500 text-xs animate-pulse" style={{ animationDelay: `${i * 0.12}s` }}>?</div>
+            ))}
+          </div>
+
+          {/* Countdown ring */}
+          <div className="mt-8 flex flex-col items-center">
+            <div className="relative w-20 h-20">
+              <svg viewBox="0 0 80 80" className="w-20 h-20 -rotate-90">
+                <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="5" />
+                <circle cx="40" cy="40" r="34" fill="none" stroke="#22d3ee" strokeWidth="5" strokeLinecap="round"
+                  strokeDasharray={`${(secondsLeft / GATHER_SECONDS) * 213.6} 213.6`} className="transition-all duration-1000" />
+              </svg>
+              <div className="absolute inset-0 grid place-items-center text-2xl font-black font-mono text-white tabular-nums">{secondsLeft}</div>
+            </div>
+            <p className="mt-2 text-[10px] font-bold text-slate-500">
+              {secondsLeft > 0 ? 'تبدأ المباراة خلال ثوانٍ' : 'جارٍ تجهيز الساحة بالبوتات…'}
+            </p>
+          </div>
+        </div>
+
+        <p className="relative text-[10px] text-slate-600 text-center leading-relaxed">
+          <Sparkles className="inline w-3 h-3 text-amber-300 ml-1" />
+          لا خصم؟ نملأ الساحة ببوتات تكتيكية حتى لا تنتظر أبداً
+        </p>
+
+        <style>{`
+          @keyframes radar { to { transform: rotate(360deg); } }
+        `}</style>
+      </div>
+    );
+  }
 
   return (
     <section className="space-y-5 pb-24 text-right" dir="rtl">
@@ -55,7 +203,7 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
             </span>
-            1,248 لاعب متصل الآن
+            {config.matchmakerAvailable ? 'خوادم المطابقة نشطة' : 'وضع التدريب المحلي'}
           </span>
           <span className="font-mono text-xs font-black text-amber-300">★ {user.stars}</span>
         </div>
@@ -117,14 +265,16 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
       </div>
 
       {/* ===== Primary CTA ===== */}
-      <button onClick={() => start('host', roomCode('QUICK'))}
+      <button onClick={beginSearch}
         className="group relative w-full overflow-hidden rounded-2xl border border-cyan-300/40 bg-gradient-to-l from-cyan-500/25 via-blue-600/10 to-cyan-500/25 p-4 text-right transition hover:border-cyan-200 active:scale-[.99]">
         <div className="absolute inset-y-0 left-0 w-1/3 bg-white/10 blur-2xl animate-[shine_3.2s_ease-in-out_infinite]" />
         <div className="relative flex items-center gap-3">
           <div className="grid h-12 w-12 place-items-center rounded-xl bg-cyan-300/15 text-cyan-200 border border-cyan-300/20"><Swords className="h-6 w-6" /></div>
           <div className="flex-1">
             <p className="text-base font-black text-white">بحث سريع عن معركة</p>
-            <p className="mt-0.5 text-xs text-cyan-100/60">مطابقة فورية مع أقرب لاعب</p>
+            <p className="mt-0.5 text-xs text-cyan-100/60">
+              {config.matchmakerAvailable ? 'خصم حقيقي خلال ٣٠ ثانية · ٨ مقاتلين' : 'معركة بوتات فورية · ٨ مقاتلين'}
+            </p>
           </div>
           <ArrowLeft className="h-5 w-5 rotate-180 text-cyan-200 transition group-hover:-translate-x-1" />
         </div>

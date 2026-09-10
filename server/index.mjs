@@ -33,16 +33,21 @@ const PORT = Number(process.env.PORT || 8000);
 const HOST = '0.0.0.0';
 
 // ---- Matchmaking configuration (env-overridable for tests) ----
+// quick  = the live queue: pairs humans 1v1 (maxHumans 2) and fills the map
+//          up to totalFighters with bots, so nobody ever waits past the window.
+// ranked = future competitive queue: full human lobby, no bot fill.
 const MODES = {
   quick: {
-    target: 8,                                             // room size (real + bots)
-    minReal: Number(process.env.QUICK_MIN_REAL || 2),      // humans needed before bot-fill
-    fillMs: Number(process.env.QUICK_FILL_MS || 30000)     // gathering window
+    maxHumans: Number(process.env.QUICK_MAX_HUMANS || 2),       // reliable PvP ceiling (1v1)
+    totalFighters: Number(process.env.QUICK_TOTAL_FIGHTERS || 8), // map filled with bots
+    fillMs: Number(process.env.QUICK_FILL_MS || 30000),         // gathering window
+    allowBotFill: true
   },
   ranked: {
-    target: 8,
-    minReal: Number(process.env.RANKED_MIN_REAL || 8),     // ranked never bot-fills
-    fillMs: Number(process.env.RANKED_FILL_MS || 60000)
+    maxHumans: Number(process.env.RANKED_MAX_HUMANS || 8),
+    totalFighters: 8,
+    fillMs: Number(process.env.RANKED_FILL_MS || 60000),
+    allowBotFill: false
   }
 };
 
@@ -81,7 +86,7 @@ function formRoom(members, mode) {
   const cfg = MODES[mode];
   const roomCode = 'ROOM-' + randomBytes(3).toString('hex').toUpperCase();
   const players = members.map((m) => ({ id: m.id, name: m.name }));
-  const fillBots = Math.max(0, cfg.target - players.length);
+  const fillBots = cfg.allowBotFill ? Math.max(0, cfg.totalFighters - players.length) : 0;
   log(`room ${roomCode} formed (mode=${mode}, real=${players.length}, bots=${fillBots})`);
   for (const m of members) {
     const i = queue.indexOf(m);
@@ -103,13 +108,16 @@ function tick() {
     if (group.length === 0) continue;
 
     // Full lobby -> start immediately.
-    if (group.length >= cfg.target) {
-      formRoom(group.slice(0, cfg.target), mode);
+    if (group.length >= cfg.maxHumans) {
+      formRoom(group.slice(0, cfg.maxHumans), mode);
       continue;
     }
-    // Gathering window elapsed with enough humans -> fill with bots.
-    if (group.length >= cfg.minReal && now - group[0].joinedAt >= cfg.fillMs) {
-      formRoom(group.slice(0, cfg.target), mode);
+    // Gathering window elapsed -> start with whoever is here. Quick mode
+    // fills the remaining slots with bots (a lone player gets a full bot
+    // battle instead of waiting forever); ranked keeps waiting for a full
+    // human lobby.
+    if (cfg.allowBotFill && now - group[0].joinedAt >= cfg.fillMs) {
+      formRoom(group.slice(0, cfg.maxHumans), mode);
     }
   }
 }

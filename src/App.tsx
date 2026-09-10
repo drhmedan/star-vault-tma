@@ -19,6 +19,7 @@ import { Pubg3DArena } from './components/Pubg3DArena';
 import { CyberWarzoneArena } from './components/CyberWarzoneArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
 import { MapId } from './game3d/types3d';
+import { MatchInfo } from './services/matchmaking';
 import { sound } from './audio/soundEngine';
 
 type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals';
@@ -31,9 +32,10 @@ export const App: React.FC = () => {
   // Active Tactical PvP match state
   const [activeMatch, setActiveMatch] = useState<{
     roomCode: string;
-    mode: 'host' | 'join' | 'ai';
+    mode: 'host' | 'join' | 'ai' | 'matchmade';
     stakeStars: number;
     mapId?: MapId;
+    matchInfo?: MatchInfo;
   } | null>(null);
 
   // Initialize or load user profile
@@ -196,7 +198,7 @@ export const App: React.FC = () => {
   };
 
   // PvP Tactical Handlers
-  const handleStartPvPMatch = (roomCode: string, mode: 'host' | 'join' | 'ai', stakeStars: number, mapId: MapId = 'warzone') => {
+  const handleStartPvPMatch = (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId: MapId = 'warzone', matchInfo?: MatchInfo) => {
     if (stakeStars > 0 && user.stars < stakeStars) {
       setTab('shop');
       return;
@@ -204,7 +206,7 @@ export const App: React.FC = () => {
     if (stakeStars > 0) {
       setUser(p => ({ ...p, stars: p.stars - stakeStars }));
     }
-    setActiveMatch({ roomCode, mode, stakeStars, mapId });
+    setActiveMatch({ roomCode, mode, stakeStars, mapId, matchInfo });
   };
 
   const handleMatchComplete = (won: boolean, trophiesDelta: number, dustDelta: number, starsDelta: number) => {
@@ -242,6 +244,7 @@ export const App: React.FC = () => {
               mode={activeMatch.mode}
               stakeStars={activeMatch.stakeStars}
               mapId={activeMatch.mapId}
+              matchInfo={activeMatch.matchInfo}
               onExit={() => setActiveMatch(null)}
               onMatchComplete={handleMatchComplete}
             />

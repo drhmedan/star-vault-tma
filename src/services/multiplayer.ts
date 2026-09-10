@@ -1,5 +1,6 @@
 import Peer, { DataConnection } from 'peerjs';
 import { MultiplayerMessage, DeployedUnit, CommanderAbilityType } from '../types';
+import { config } from '../config';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -15,6 +16,8 @@ export class MultiplayerService {
   public status: ConnectionStatus = 'disconnected';
   public isAiMode: boolean = false;
   public myPlayerId: number = 0;
+  /** Player id of the connected opponent (learned from their messages). */
+  public opponentId: number | null = null;
 
   constructor() {}
 
@@ -26,6 +29,14 @@ export class MultiplayerService {
     this.myPlayerId = playerId;
     this.onMessageCallback = onMessage;
     this.onStatusChangeCallback = onStatusChange;
+  }
+
+  /** PeerJS connection options: self-hosted signaling when configured. */
+  private peerOptions(): Record<string, unknown> {
+    const signal = config.peerSignal;
+    return signal
+      ? { host: signal.host, port: signal.port, path: signal.path, secure: signal.secure }
+      : {};
   }
 
   // 1. Create a Host Room
@@ -53,6 +64,7 @@ export class MultiplayerService {
     try {
       this.peer = new Peer(peerId, {
         debug: 1,
+        ...this.peerOptions(),
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -106,6 +118,7 @@ export class MultiplayerService {
     try {
       this.peer = new Peer(myClientPeerId, {
         debug: 1,
+        ...this.peerOptions(),
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -116,9 +129,7 @@ export class MultiplayerService {
 
       this.peer.on('open', () => {
         console.log('Client peer opened, connecting to host:', hostPeerId);
-        const connection = this.peer!.connect(hostPeerId, { reliable: true });
-        this.conn = connection;
-        this.setupConnectionHandlers();
+        this.tryConnectToHost(hostPeerId, 12);
       });
 
       this.peer.on('error', (err) => {
@@ -139,6 +150,23 @@ export class MultiplayerService {
     }, 400);
   }
 
+  // Keep dialing the host until the DataChannel opens (the host's peer may
+  // still be initialising when the joiner arrives, so a single attempt would
+  // race and fail).
+  private tryConnectToHost(hostPeerId: string, remaining: number) {
+    if (!this.peer || this.peer.destroyed || this.status === 'connected') return;
+    const connection = this.peer.connect(hostPeerId, { reliable: true });
+    this.conn = connection;
+    this.setupConnectionHandlers();
+    const guard = window.setTimeout(() => {
+      if (!connection.open && this.conn === connection && remaining > 0) {
+        try { connection.close(); } catch { /* already closed */ }
+        this.tryConnectToHost(hostPeerId, remaining - 1);
+      }
+    }, 1500);
+    connection.on('open', () => window.clearTimeout(guard));
+  }
+
   // 3. Start AI Training Match
   public startAiMatch() {
     this.cleanup();
@@ -146,6 +174,15 @@ export class MultiplayerService {
     this.isHost = true;
     this.roomCode = 'AI-TRAINING';
     this.updateStatus('connected', 'الذكاء الاصطناعي (Cyber AI)');
+  }
+
+  // 4. Solo matchmade battle (no human opponent found — bot-only fight)
+  public startSoloMatch() {
+    this.cleanup();
+    this.isAiMode = false;
+    this.isHost = true;
+    this.roomCode = 'SOLO';
+    this.updateStatus('connected', 'معركة البوتات');
   }
 
   private setupConnectionHandlers() {
@@ -177,6 +214,9 @@ export class MultiplayerService {
   }
 
   private handleIncomingMessage(msg: MultiplayerMessage) {
+    if (typeof msg?.senderId === 'number') {
+      this.opponentId = msg.senderId;
+    }
     if (this.status !== 'connected') {
       this.updateStatus('connected', 'لاعب حقيقي متصل');
     }
@@ -310,6 +350,7 @@ export class MultiplayerService {
     }
     this.status = 'disconnected';
     this.isAiMode = false;
+    this.opponentId = null;
   }
 }
 

@@ -23,15 +23,16 @@ npm start            # يستمع على المنفذ 8000
 | المتغير | الافتراضي | الوصف |
 |---|---|---|
 | `PORT` | 8000 | منفذ الاستماع |
-| `QUICK_MIN_REAL` | 2 | أقل عدد بشر قبل ملء البوتات (الوضع السريع) |
+| `QUICK_MAX_HUMANS` | 2 | أقصى عدد بشر في غرفة الوضع السريع (1v1) |
+| `QUICK_TOTAL_FIGHTERS` | 8 | إجمالي المقاتلين في المباراة (البشر + البوتات) |
 | `QUICK_FILL_MS` | 30000 | نافذة التجميع بالمللي ثانية |
-| `RANKED_MIN_REAL` | 8 | الوضع التنافسي لا يملأ بوتات (يتطلب 8 حقيقيين) |
+| `RANKED_MAX_HUMANS` | 8 | الوضع التنافسي يتطلب غرفة بشرية كاملة بلا بوتات |
 | `RANKED_FILL_MS` | 60000 | نافذة التجميع التنافسي |
 
 ## اختبار سريع
 
 ```bash
-QUICK_MIN_REAL=1 QUICK_FILL_MS=1000 PORT=8080 npm start
+QUICK_FILL_MS=1000 PORT=8080 npm start
 # ثم في نافذة أخرى:
 node -e "const w=new (require('ws'))('ws://127.0.0.1:8080/match');w.on('open',()=>w.send(JSON.stringify({type:'queue',payload:{id:1,name:'t',teamSize:1,mode:'quick'}})));w.on('message',d=>console.log(d.toString()))"
 ```
