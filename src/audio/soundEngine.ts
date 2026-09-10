@@ -415,6 +415,30 @@ class SoundEngine {
     }
   }
 
+  public playJump() {
+    if (this.muted) return;
+    const ctx = this.getContext(); if (!ctx) return;
+    const t = ctx.currentTime;
+    this.tone(ctx, 'sine', 280, 540, t, 0.1, 0.06);
+    this.burst(ctx, t, 0.06, 0.05, 'bandpass', 900, 500);
+  }
+
+  public playLand(surface: Surface, hard: boolean) {
+    if (this.muted) return;
+    const ctx = this.getContext(); if (!ctx) return;
+    const t = ctx.currentTime;
+    const peak = hard ? 0.17 : 0.08;
+    if (surface === 'metal') {
+      this.tick(ctx, t, 300, 0.07, peak, 'square');
+      this.tick(ctx, t + 0.012, 720, 0.06, peak * 0.6, 'sine');
+    } else if (surface === 'concrete' || surface === 'road') {
+      this.tone(ctx, 'sine', 140, 55, t, 0.07, peak);
+      this.burst(ctx, t, 0.04, peak * 0.7, 'highpass', 1000, 500);
+    } else {
+      this.burst(ctx, t, 0.06, peak, 'lowpass', 500, 200);
+    }
+  }
+
   public playWhiz() {
     if (this.muted) return;
     const ctx = this.getContext(); if (!ctx) return;

@@ -422,7 +422,24 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     let lastNetSync = 0;
     let lastZoneDmg = 0;
     let lastHudSync = 0;
-    let cameraShake = 0;
+    // ---- Premium screen shake ----
+    // Directional kick impulse (recoil/explosions) + rolling rotation + a
+    // smooth layered wobble for sustained vibration. No white-noise jitter —
+    // it reads as a cinematic, physical camera rather than cheap shaking.
+    let shakeMag = 0;
+    const shakeKick = new THREE.Vector3();
+    let shakeRoll = 0;
+    let fovPunch = 0;
+    let heartbeatTimer = 0;
+
+    // Kick the camera along a direction (screen-space, in metres) with a roll.
+    // `mag` is the impulse size; dx/dy are unit directions (x = right, y = up).
+    const addShake = (mag: number, dx = 0, dy = 0, roll = 0) => {
+      shakeMag = Math.max(shakeMag, mag);
+      shakeKick.x += dx * mag;
+      shakeKick.y += dy * mag;
+      shakeRoll += roll * mag * 2;
+    };
     // Temp vectors/colours reused every frame (no per-frame allocation).
     const lootColor = new THREE.Color();
     const lootLightPos = new THREE.Vector3();
@@ -489,7 +506,17 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       p.hp = Math.max(0, p.hp - (dmg - absorbed));
       sound.playHurt();
       tgHaptics.impact('heavy');
-      cameraShake = Math.max(cameraShake, 0.35);
+      // Directional hit feedback: jerk up + roll + a red FOV punch.
+      if (fromPos) {
+        const hitDir = p.pos.clone().sub(fromPos).setY(0);
+        if (hitDir.lengthSq() < 0.001) hitDir.set(1, 0, 0);
+        hitDir.normalize();
+        const camHit = hitDir.clone().applyQuaternion(camera.quaternion.clone().invert());
+        addShake(0.1, camHit.x, 0.7 + camHit.y, 0.5);
+      } else {
+        addShake(0.1, 0, 0.8, 0.45);
+      }
+      fovPunch = Math.min(0.18, fovPunch + 2.5);
       setDmgVignette(Math.min(1, 0.35 + dmg / 100));
       window.setTimeout(() => setDmgVignette(0), 300);
 
@@ -610,7 +637,14 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       };
       anim();
       sound.playExplosion();
-      cameraShake = Math.max(cameraShake, 0.55);
+      // Blast kicks the camera away from the explosion centre with heavy roll.
+      const blastDir = p.pos.clone().sub(pos).setY(0);
+      if (blastDir.lengthSq() < 0.001) blastDir.set(1, 0, 0);
+      blastDir.normalize();
+      const camBlast = blastDir.clone().applyQuaternion(camera.quaternion.clone().invert());
+      addShake(0.18, camBlast.x, 0.7 + camBlast.y, (Math.random() - 0.5) * 0.8);
+      fovPunch = Math.min(0.2, fovPunch + 6);
+      tgHaptics.impact('heavy');
       const dToP = pos.distanceTo(p.pos);
       if (dToP < radius + 2) damagePlayer(Math.round(90 * Math.max(0.15, 1 - dToP / (radius + 2))), pos);
       const dToB = pos.distanceTo(b.pos);
@@ -639,7 +673,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
       sound.playGunshot(w.def.type);
       tgHaptics.impact(w.def.type === 'awm' || w.def.type === 'rpg' ? 'heavy' : 'medium');
-      cameraShake = Math.max(cameraShake, w.def.type === 'awm' ? 0.32 : w.def.type === 'shotgun' ? 0.2 : 0.09);
+      // Directional recoil kick: the camera snaps up and rolls a hair, with a
+      // brief FOV punch — the classic "every shot has weight" feel.
+      const shakePower = w.def.type === 'awm' ? 0.12 : w.def.type === 'shotgun' ? 0.09 : w.def.type === 'rpg' ? 0.16 : w.def.type === 'mp5' ? 0.03 : 0.045;
+      addShake(shakePower, (Math.random() - 0.5) * 0.35, 0.8, (Math.random() - 0.5) * 0.5);
+      fovPunch = Math.min(0.2, fovPunch + (w.def.type === 'awm' ? 4.5 : w.def.type === 'shotgun' ? 3.5 : w.def.type === 'rpg' ? 5 : 1.8));
       muzzleT = 0.05;
 
       if (w.def.type === 'rpg') {
@@ -1118,7 +1156,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         sound.playPickup();
       },
       jump: () => {
-        if (p.grounded && !p.climbing) { p.vel.y = 5.6; p.grounded = false; }
+        if (p.grounded && !p.climbing) {
+          p.vel.y = 5.6;
+          p.grounded = false;
+          sound.playJump();
+          tgHaptics.impact('light');
+          addShake(0.015, 0, 0.5, 0);
+        }
       },
       toggleView: () => {
         viewModeRef.current = viewModeRef.current === 'tpp' ? 'fpp' : 'tpp';
@@ -1261,9 +1305,19 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         p.vel.y -= 15 * dt;
         p.pos.y += p.vel.y * dt;
         if (p.pos.y <= standY + 0.01) {
+          const fallSpeed = p.vel.y;
           p.pos.y = standY;
           p.vel.y = 0;
-          if (!p.grounded) sound.playFootstep(p.surface, false);
+          if (!p.grounded) {
+            const hard = fallSpeed < -8;
+            sound.playLand(p.surface, hard);
+            if (hard) {
+              addShake(0.06, 0, -0.8, 0);
+              tgHaptics.impact('medium');
+            } else {
+              tgHaptics.impact('soft');
+            }
+          }
           p.grounded = true;
         } else p.grounded = false;
 
@@ -1299,6 +1353,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         if (p.stepTimer <= 0) {
           p.stepTimer = p.sprinting ? 0.3 : 0.42;
           sound.playFootstep(p.surface, p.sprinting);
+          tgHaptics.impact(p.sprinting ? 'light' : 'soft');
+        }
+      }
+
+      // ---- Heartbeat thump when critically wounded ----
+      if (phase === 'combat' && p.alive && p.hp <= 30) {
+        heartbeatTimer -= dt;
+        if (heartbeatTimer <= 0) {
+          heartbeatTimer = 1.15 - (30 - p.hp) * 0.022;
+          sound.playHeartbeat();
         }
       }
 
@@ -1324,6 +1388,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           w.reserveAmmo -= take;
         }
         p.reloading = false;
+        sound.playClick();
+        tgHaptics.notification('success');
       }
       if (p.switching && now >= p.switchUntil) p.switching = false;
 
@@ -1603,15 +1669,20 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const crouchEye = p.crouched ? 1.15 : 1.65;
       const eyeH = p.prone ? 0.42 : crouchEye + (sliding ? -0.25 : 0);
       // FPP aim = per-weapon ADS (sniper zooms to 15°). TPP aim = shoulder zoom.
-      const fovFpp = aimRef.current ? (currentWeapon()?.def.adsFov ?? 45) : 75;
-      const fovTpp = aimRef.current ? 55 : 70;
-      const targetFov = THREE.MathUtils.lerp(fovFpp, fovTpp, tpp);
-      camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, dt * 10);
+      // Sprint widens the view (sense of speed); fire/recoil punches it briefly.
+      const sprintFov = !aimRef.current && p.sprinting ? 5 : 0;
+      const fovFpp = aimRef.current ? (currentWeapon()?.def.adsFov ?? 45) : 75 + sprintFov;
+      const fovTpp = aimRef.current ? 55 : 70 + sprintFov;
+      const targetFov = THREE.MathUtils.lerp(fovFpp, fovTpp, tpp) + fovPunch;
+      camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, dt * 12);
       camera.updateProjectionMatrix();
+      fovPunch *= Math.pow(0.0015, dt);
 
       const bobAmp = p.sprinting ? 0.035 : p.crouched ? 0.012 : 0.022;
       const bobY = moving && p.grounded ? Math.abs(Math.sin(p.bobPhase)) * bobAmp : 0;
       const bobX = moving && p.grounded ? Math.sin(p.bobPhase * 0.5) * bobAmp * 0.6 : 0;
+      // Slight roll into sideways movement (strafe tilt) for a planted feel.
+      const strafeTilt = (moving && p.grounded ? mx : 0) * -0.014;
 
       // First-person viewmodel is shown only while mostly first-person; the
       // soldier body only while mostly third-person.
@@ -1623,12 +1694,15 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           const basePos = new THREE.Vector3(0.26, -0.22, -0.5);
           const adsPos = new THREE.Vector3(0, -0.012, -0.42);
           const vmPos = basePos.clone().lerp(adsPos, adsBlend2);
-          vmPos.x += p.lean * -0.12 + bobX;
-          vmPos.y += bobY + p.recoilPitch * 0.25 + Math.sin(now * 0.0016) * 0.004 * (1 - adsBlend2 * 0.7);
-          vmPos.z += p.recoilPitch * 0.5;
+          vmPos.x += p.lean * -0.12 + bobX + p.recoilYaw * 1.4;
+          vmPos.y += bobY + p.recoilPitch * 0.35 + Math.sin(now * 0.0016) * 0.004 * (1 - adsBlend2 * 0.7);
+          vmPos.z += p.recoilPitch * 0.6;
           vm.position.lerp(vmPos, dt * 16);
-          vm.rotation.x = THREE.MathUtils.lerp(vm.rotation.x, p.pitch * 0.5 - p.recoilPitch * 3, dt * 16);
-          vm.rotation.z = THREE.MathUtils.lerp(vm.rotation.z, p.lean * -0.06 + stride * 0.01, dt * 10);
+          vm.rotation.x = THREE.MathUtils.lerp(vm.rotation.x, p.pitch * 0.5 - p.recoilPitch * 3.4, dt * 16);
+          vm.rotation.y = THREE.MathUtils.lerp(vm.rotation.y, p.recoilYaw * 2.2, dt * 16);
+          vm.rotation.z = THREE.MathUtils.lerp(vm.rotation.z, p.lean * -0.06 + stride * 0.01 + p.recoilYaw * -1.2, dt * 10);
+          // Muzzle flash gets a fresh random roll each shot (organic feel).
+          if (muzzleT > 0) viewmodel.muzzle.rotation.z = Math.random() * Math.PI * 2;
           viewmodel.muzzleLight.intensity = muzzleT > 0 ? 5 : 0;
           (viewmodel.muzzle.children[0] as THREE.Object3D).visible = muzzleT > 0;
         }
@@ -1641,7 +1715,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         p.pos.y + eyeH + bobY,
         p.pos.z
       );
-      const qFpp = new THREE.Quaternion().setFromEuler(new THREE.Euler(p.pitch, p.yaw, p.lean * 0.12, 'YXZ'));
+      const qFpp = new THREE.Quaternion().setFromEuler(new THREE.Euler(p.pitch, p.yaw, p.lean * 0.12 + strafeTilt, 'YXZ'));
 
       // ---- Third-person over-the-shoulder pose ----
       // The camera sits up and to the right of the player's head and looks
@@ -1689,18 +1763,31 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const look = tppPos.clone().addScaledVector(fwd, 60);
       camera.position.copy(tppPos);
       camera.lookAt(look);
-      camera.rotateZ(-p.lean * 0.06);
+      camera.rotateZ(-p.lean * 0.06 + strafeTilt * 0.6);
       const qTpp = camera.quaternion.clone();
 
       // Blend the two poses: tpp=0 -> first-person, tpp=1 -> third-person.
       camera.position.copy(fppPos).lerp(tppPos, tpp);
       camera.quaternion.copy(qFpp).slerp(qTpp, tpp);
 
-      if (cameraShake > 0.005) {
-        camera.position.x += (Math.random() - 0.5) * cameraShake;
-        camera.position.y += (Math.random() - 0.5) * cameraShake;
-        cameraShake *= Math.pow(0.001, dt);
-      } else cameraShake = 0;
+      // ---- Apply screen shake: decaying directional kick + rolling wobble ----
+      // The kick is applied as an offset from the true pose and decays back to
+      // zero, so the camera always settles on the correct framing.
+      if (shakeMag > 0.001 || shakeKick.lengthSq() > 1e-8 || Math.abs(shakeRoll) > 0.0005) {
+        const t = now * 0.001;
+        const wobX = Math.sin(t * 46.3) * 0.55 + Math.sin(t * 23.7) * 0.45;
+        const wobY = Math.cos(t * 39.1) * 0.55 + Math.cos(t * 31.3) * 0.45;
+        camera.translateX(shakeKick.x + wobX * shakeMag * 0.03);
+        camera.translateY(shakeKick.y + wobY * shakeMag * 0.03);
+        camera.rotateZ(shakeRoll + wobX * shakeMag * 0.02);
+        shakeKick.multiplyScalar(Math.pow(0.0012, dt));
+        shakeMag *= Math.pow(0.0012, dt);
+        shakeRoll *= Math.pow(0.0012, dt);
+        if (shakeMag < 0.001) shakeMag = 0;
+      } else {
+        shakeKick.set(0, 0, 0);
+        shakeRoll = 0;
+      }
 
       if (flashLevel > 0.01) {
         setScreenFlash(flashLevel);
