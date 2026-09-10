@@ -10,7 +10,7 @@ import { GameMode, MatchInfo, MatchmakingClient } from '../services/matchmaking'
 
 interface PvPLobbyProps {
   user: UserProfile;
-  onStartMatch: (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId?: MapId, matchInfo?: MatchInfo, gameMode?: GameMode) => void;
+  onStartMatch: (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId?: MapId, matchInfo?: MatchInfo, gameMode?: GameMode, partyTeam?: number) => void;
   onOpenLoadout: () => void;
 }
 
@@ -35,16 +35,42 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
   const [searching, setSearching] = useState(false);
   const [queueWaiting, setQueueWaiting] = useState(0);
   const [secondsLeft, setSecondsLeft] = useState(30);
+  const [partyOpen, setPartyOpen] = useState(false);
+  const [partyMode, setPartyMode] = useState<GameMode>('2v2');
+  const [partyTeam, setPartyTeam] = useState<0 | 1>(0);
+  const [partyId, setPartyId] = useState('');
   const searchRef = useRef<MatchmakingClient | null>(null);
   const startingRef = useRef(false);
 
   const activeMode = MODE_CATALOG.find((m) => m.id === selectedMode) ?? MODE_CATALOG[0];
   const totalFighters = activeMode.fighters;
 
-  const roomCode = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
-  const start = (mode: 'host' | 'join' | 'ai' | 'matchmade', code: string, stake = stakeStars, info?: MatchInfo, gameMode: GameMode = selectedMode) => {
+  const start = (mode: 'host' | 'join' | 'ai' | 'matchmade', code: string, stake = stakeStars, info?: MatchInfo, gameMode: GameMode = selectedMode, team?: number) => {
     sound.playClick();
-    onStartMatch(code, mode, stake, selectedMap, info, gameMode);
+    onStartMatch(code, mode, stake, selectedMap, info, gameMode, team);
+  };
+
+  // Private party codes self-describe the room rules: SV-{MODE}-{TEAM}-{ID}.
+  const partyTagOf = (mode: GameMode) => (mode === '2v2' ? '2V2' : mode === 'tdm4v4' ? 'TDM' : 'FFA');
+  const partyCodeFor = (mode: GameMode, team: 0 | 1) => `SV-${partyTagOf(mode)}-${team === 0 ? 'A' : 'B'}-${partyId}`;
+  const parsePartyCode = (raw: string): { mode: GameMode; hostTeam: 0 | 1 } | null => {
+    const m = raw.trim().toUpperCase().match(/^SV-(FFA|2V2|TDM)-([AB])-([A-Z0-9]{4,8})$/);
+    if (!m) return null;
+    const mode: GameMode = m[1] === '2V2' ? '2v2' : m[1] === 'TDM' ? 'tdm4v4' : 'ffa';
+    return { mode, hostTeam: m[2] === 'A' ? 0 : 1 };
+  };
+  const startParty = () => {
+    start('host', partyCodeFor(partyMode, partyTeam), stakeStars, undefined, partyMode, partyTeam);
+  };
+  const joinByCode = () => {
+    const parsed = parsePartyCode(joinCode);
+    if (parsed) {
+      // The joiner takes the squad opposite the host's choice.
+      start('join', joinCode.trim().toUpperCase(), stakeStars, undefined, parsed.mode, 1 - parsed.hostTeam);
+    } else {
+      // Legacy plain code: a casual 1v1 room (free-for-all rules).
+      start('join', joinCode.trim(), stakeStars, undefined, 'ffa');
+    }
   };
 
   const beginSearch = () => {
@@ -372,10 +398,16 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
 
       {/* ===== Secondary actions ===== */}
       <div className="grid grid-cols-2 gap-3">
-        <button onClick={() => start('host', roomCode('CYBER'))}
-          className="flex items-center gap-3 rounded-2xl border border-amber-300/20 bg-gradient-to-b from-amber-400/10 to-transparent p-4 text-right transition hover:border-amber-300/40 active:scale-[.98]">
+        <button onClick={() => {
+          sound.playClick();
+          setPartyOpen(o => {
+            if (!o && !partyId) setPartyId(Math.random().toString(36).slice(2, 7).toUpperCase());
+            return !o;
+          });
+        }}
+          className={`flex items-center gap-3 rounded-2xl border p-4 text-right transition active:scale-[.98] ${partyOpen ? 'border-amber-300/50 bg-gradient-to-b from-amber-400/15 to-transparent' : 'border-amber-300/20 bg-gradient-to-b from-amber-400/10 to-transparent hover:border-amber-300/40'}`}>
           <Share2 className="h-5 w-5 text-amber-200" />
-          <span><b className="block text-sm text-white">غرفة خاصة</b><small className="text-[10px] text-slate-500">دعوة صديق</small></span>
+          <span><b className="block text-sm text-white">غرفة خاصة</b><small className="text-[10px] text-slate-500">أنشئ فريقك وادعُ صديقاً</small></span>
         </button>
         <button onClick={() => start('ai', 'AI-PRACTICE', 0)}
           className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-right transition hover:border-white/25 active:scale-[.98]">
@@ -384,15 +416,55 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
         </button>
       </div>
 
+      {/* ===== Party room builder ===== */}
+      {partyOpen && (
+        <div className="rounded-2xl border border-amber-300/25 bg-gradient-to-b from-amber-400/[0.07] to-transparent p-4">
+          <div className="mb-3 flex items-center gap-2 text-xs font-bold text-amber-100"><Users className="h-4 w-4 text-amber-300" /> قواعد الغرفة الخاصة</div>
+          <div className="flex flex-wrap gap-2">
+            {(['2v2', 'tdm4v4', 'ffa'] as GameMode[]).map((m) => {
+              const meta = MODE_CATALOG.find((c) => c.id === m);
+              return (
+                <button key={m} onClick={() => { sound.playClick(); setPartyMode(m); }}
+                  className={`rounded-xl border px-3 py-2 text-xs font-black transition active:scale-95 ${partyMode === m ? 'border-amber-300/60 bg-amber-300/15 text-amber-100' : 'border-white/10 bg-black/25 text-slate-400 hover:border-white/25'}`}>
+                  {meta?.tag ?? m.toUpperCase()}
+                </button>
+              );
+            })}
+          </div>
+          {partyMode !== 'ffa' && (
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-[10px] font-bold text-slate-400">فريقك:</span>
+              {([0, 1] as const).map((t) => (
+                <button key={t} onClick={() => { sound.playClick(); setPartyTeam(t); }}
+                  className={`h-9 w-9 rounded-xl border text-xs font-black transition active:scale-95 ${partyTeam === t ? 'border-emerald-300/60 bg-emerald-300/15 text-emerald-200' : 'border-white/10 bg-black/25 text-slate-400 hover:border-white/25'}`}>
+                  {t === 0 ? 'A' : 'B'}
+                </button>
+              ))}
+              <span className="mr-auto text-[10px] text-slate-500">{partyMode === '2v2' ? 'ثنائي + بوتان' : '٤ ضد ٤ + بوتات'}</span>
+            </div>
+          )}
+          <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-amber-300/20 bg-black/30 px-3 py-2">
+            <span className="text-[10px] font-bold text-slate-400">رمز الغرفة</span>
+            <span className="font-mono text-sm font-black tracking-[0.18em] text-amber-200" dir="ltr">{partyId ? partyCodeFor(partyMode, partyTeam) : '……'}</span>
+          </div>
+          <button onClick={startParty}
+            className="mt-3 w-full rounded-xl bg-gradient-to-l from-amber-300 to-amber-400 py-3 text-xs font-black text-slate-950 shadow-[0_0_24px_rgba(251,191,36,.28)] transition active:scale-[.98]">
+            إنشاء الغرفة ودخول المعركة
+          </button>
+          <p className="mt-2 text-center text-[10px] text-slate-500">شارك الرمز مع صديق — سيُسند تلقائياً إلى الفريق المقابل، وتمتلئ المقاعد المتبقية بالبوتات.</p>
+        </div>
+      )}
+
       {/* ===== Join by code ===== */}
       <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
         <div className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-300"><LockKeyhole className="h-4 w-4 text-slate-500" /> الانضمام برمز تكتيكي</div>
         <div className="flex gap-2">
-          <input value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())} placeholder="CYBER-X84"
+          <input value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())} placeholder="SV-2V2-A-XXXXX"
             className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-3 text-center font-mono text-sm text-white tracking-[0.2em] outline-none placeholder:text-slate-700 focus:border-cyan-300/60 transition" />
-          <button disabled={!joinCode.trim()} onClick={() => start('join', joinCode.trim())}
+          <button disabled={!joinCode.trim()} onClick={joinByCode}
             className="rounded-xl bg-gradient-to-b from-cyan-300 to-cyan-500 px-4 text-xs font-black text-slate-950 shadow-[0_0_20px_rgba(34,211,238,.3)] disabled:opacity-30 disabled:shadow-none transition active:scale-95">دخول</button>
         </div>
+        <p className="mt-2 text-[10px] text-slate-500">رمز خاص مثل <span className="font-mono text-cyan-200/70">SV-2V2-A-X8K2Q</span> — يُقرأ النمط والفريق تلقائياً من الرمز.</p>
       </div>
 
       <div className="flex items-center justify-center gap-2 text-[10px] text-slate-600">

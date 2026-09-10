@@ -131,6 +131,8 @@ interface Pubg3DArenaProps {
   matchInfo?: MatchInfo;
   /** Game mode (ffa / 2v2 / squad). Defaults to ffa for local rooms. */
   gameMode?: GameMode;
+  /** My squad in a private party room (0 = A, 1 = B); ignored outside host/join. */
+  partyTeam?: number;
   onExit: () => void;
   /** Resolves to the deltas actually applied (server-settled when online). */
   onMatchComplete: (result: MatchCompletion) => Promise<SettleOutcome>;
@@ -276,7 +278,7 @@ interface EngineApi {
 let floatId = 0;
 
 export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
-  user, roomCode, mode, stakeStars, mapId = 'warzone', matchInfo, gameMode, onExit, onMatchComplete
+  user, roomCode, mode, stakeStars, mapId = 'warzone', matchInfo, gameMode, partyTeam, onExit, onMatchComplete
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
@@ -321,6 +323,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
   const phaseRef = useRef<Phase>('countdown');
   const gameOverRef = useRef<GameResult>(null);
   const lastLootRef = useRef<LootItem3D | null>(null);
+  const everConnectedRef = useRef(false);
 
   const [hud, setHud] = useState<HudState>({
     hp: 100, armor: 50, ammo: 30, reserve: 90,
@@ -447,19 +450,23 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     };
 
     // ---- Game mode resolution -------------------------------------------
-    // Team modes (2v2 / squad / tdm) assign squads by seat parity (the server
-    // tags humans; bots continue the parity so both sides always end up even).
-    // ---- Game mode resolution -------------------------------------------
     // Team modes (2v2 / squad / tdm4v4) assign squads by seat parity (the
     // server tags humans; bots continue the parity so both sides stay even).
-    const mySlot = matchInfo ? (matchInfo.players.find((pl) => pl.id === user.id)?.slot ?? 0) : 0;
+    // In a private party room the host occupies seat 0 and the invited friend
+    // seat 1; the same code runs on both clients so spawns stay deterministic.
+    const partyMode = mode === 'host' || mode === 'join';
+    const mySlot = matchInfo ? (matchInfo.players.find((pl) => pl.id === user.id)?.slot ?? 0)
+      : partyMode ? (mode === 'host' ? 0 : 1) : 0;
     const resolvedMode: GameMode = matchInfo?.gameMode ?? gameMode ?? 'ffa';
     const teamSize = matchInfo?.teamSize ?? (resolvedMode === '2v2' ? 2 : resolvedMode === 'squad' || resolvedMode === 'tdm4v4' ? 4 : 1);
     const tdmMode = resolvedMode === 'tdm4v4';
     const rankedMode = resolvedMode === 'ranked';
     const teamMode = teamSize >= 2;
     const myPlayer = matchInfo?.players.find((pl) => pl.id === user.id);
-    const myTeam = teamMode ? (typeof myPlayer?.team === 'number' ? myPlayer.team : mySlot % 2) : -1;
+    const myTeam = teamMode
+      ? (typeof myPlayer?.team === 'number' ? myPlayer.team : typeof partyTeam === 'number' ? partyTeam : mySlot % 2)
+      : -1;
+    const soloMode = !teamMode && !rankedMode;
 
     const scatterSpawn = (index: number): THREE.Vector3 => {
       const ang = (index / 8) * Math.PI * 2 + 0.6;
@@ -500,7 +507,18 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     if (mode === 'ai') {
       enemyUnits.push(makeEnemy(-1, 'بوت تكتيكي', false, -1, env.spawnB));
     } else if (mode === 'host' || mode === 'join') {
-      enemyUnits.push(makeEnemy(0, 'في انتظار الخصم…', true, -1, env.spawnB));
+      // Private party room: me + one invited friend + bot fill on both squads.
+      // The friend's id arrives with their first JOIN_ROOM message, but their
+      // seat and team are fixed by the code so both clients place them alike.
+      const foeSeat = 1 - mySlot;
+      const foeTeam = teamMode ? 1 - myTeam : -1;
+      enemyUnits.push(makeEnemy(0, 'في انتظار الخصم…', true, foeTeam, teamMode ? teamSpawn(foeSeat, foeTeam) : ringSpawn(foeSeat)));
+      const partyBots = teamMode ? teamSize * 2 - 2 : 6;
+      for (let i = 0; i < partyBots; i++) {
+        const botSeat = 2 + i;
+        const botTeam = teamMode ? botSeat % 2 : -1;
+        enemyUnits.push(makeEnemy(-(i + 1), `بوت ${i + 1}`, false, botTeam, teamMode ? teamSpawn(botSeat, botTeam) : ringSpawn(botSeat)));
+      }
     } else {
       // Matchmade: human opponents at their seat positions + bot fill. In team
       // modes every fighter is tagged with a squad; in FFA everyone is solo.
@@ -529,7 +547,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     scene.add(camera);
 
     const p = pRef.current;
-    p.pos.copy(mode === 'matchmade' ? (teamMode ? teamSpawn(mySlot, myTeam) : ringSpawn(mySlot)) : env.spawnA);
+    p.pos.copy(mode === 'matchmade' || partyMode ? (teamMode ? teamSpawn(mySlot, myTeam) : ringSpawn(mySlot)) : env.spawnA);
     // Face the arena center so both humans start looking toward the action.
     p.yaw = Math.atan2(-p.pos.x, -p.pos.z);
 
@@ -1172,6 +1190,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
         const hit = traceShot(origin, dir, w.def.range, 'player');
         const line = acquireTracer((equippedWeaponSkin as WeaponSkin | undefined)?.tracerColor ?? w.def.tracerColor);
+        // The tracer draws muzzle→impact so it reads as a real shot, but the
+        // hit test itself starts at `origin` (the camera in TPP) so the bullet
+        // lands exactly on the crosshair, never on the player's body.
         line.geometry.setFromPoints([muzzlePos.clone(), hit.point.clone()]);
         activeTracers.push({ line, ttl: 0.07 });
 
@@ -1351,6 +1372,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       (status, peerName) => {
         setConnStatus(status);
         if (peerName) setOpponentName(peerName);
+        if (status === 'connected') everConnectedRef.current = true;
       }
     );
     if (mode === 'host') {
@@ -2194,10 +2216,13 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           endMatch(opp ? p.hp >= opp.state.hp : p.alive && p.kills >= 1);
         }
       }
-      if (hasHumanOpponent && phase === 'combat' && elapsed > 20 && !gameOverRef.current && multiplayer.peerCount === 0) {
-        // Every human peer dropped (or never connected). In team modes their
-        // units fall so squad logic can resolve; TDM keeps rolling against bots;
-        // otherwise take the win.
+      // A private room host may wait (fighting bots) for their friend to join,
+      // so a no-show never force-ends the round — only a peer that connected and
+      // then dropped does.
+      const peerDropped = multiplayer.peerCount === 0 && (mode === 'matchmade' || everConnectedRef.current);
+      if (hasHumanOpponent && phase === 'combat' && elapsed > 20 && !gameOverRef.current && peerDropped) {
+        // Every human peer dropped. In team modes their units fall so squad
+        // logic can resolve; TDM keeps rolling against bots; otherwise the win.
         if (tdmMode) {
           for (const u of enemyUnits) if (u.state.isHuman && u.state.alive) u.state.alive = false;
         } else if (teamMode) {
@@ -2877,6 +2902,11 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
               </div>
               <span className="text-[9px] font-bold text-white/80 max-w-20 truncate">{opponentName}</span>
             </div>
+            {(mode === 'host' || mode === 'join') && connStatus !== 'connected' && (
+              <div className="flex items-center gap-1 px-2 py-1 rounded-full border border-amber-300/25 bg-black/25 backdrop-blur-sm" dir="ltr">
+                <span className="text-[9px] font-mono font-black tracking-wider text-amber-200">{roomCode}</span>
+              </div>
+            )}
             <div className="flex items-center gap-1 px-2 py-1 rounded-full border border-red-400/25 bg-black/25 backdrop-blur-sm">
               <span className="text-[10px] leading-none">💀</span>
               <span className="text-[11px] font-black font-mono text-red-400 tabular-nums">{hud.kills}</span>
@@ -3079,12 +3109,15 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
                 <span className="relative text-xl drop-shadow">🔥</span>
               </button>
 
-              {/* Camera height + view + autofire — tiny controls under the minimap */}
-              <div className="absolute top-20 left-3 z-30 flex flex-col gap-1 pointer-events-auto">
-                <button onTouchStart={() => engineRef.current?.nudgeCamHeight(1)} aria-label="رفع الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[11px] font-bold active:scale-90 flex items-center justify-center">▲</button>
-                <button onTouchStart={() => engineRef.current?.nudgeCamHeight(-1)} aria-label="خفض الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[11px] font-bold active:scale-90 flex items-center justify-center">▼</button>
-                <button onTouchStart={() => engineRef.current?.resetCamHeight()} aria-label="إعادة ضبط الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[9px] font-bold active:scale-90 flex items-center justify-center">⟲</button>
-              </div>
+              {/* TPP camera fine-tune — only meaningful over the shoulder */}
+              {hud.viewMode === 'tpp' && (
+                <div className="absolute top-20 left-3 z-30 flex flex-col gap-1 pointer-events-auto items-center">
+                  <span className="text-[8px] font-black text-white/40">كاميرا</span>
+                  <button onTouchStart={() => engineRef.current?.nudgeCamHeight(1)} aria-label="رفع الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[11px] font-bold active:scale-90 flex items-center justify-center">▲</button>
+                  <button onTouchStart={() => engineRef.current?.nudgeCamHeight(-1)} aria-label="خفض الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[11px] font-bold active:scale-90 flex items-center justify-center">▼</button>
+                  <button onTouchStart={() => engineRef.current?.resetCamHeight()} aria-label="إعادة ضبط الكاميرا" className="w-8 h-8 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-white/70 text-[9px] font-bold active:scale-90 flex items-center justify-center">⟲</button>
+                </div>
+              )}
               <div className="absolute top-20 right-3 z-30 flex flex-col gap-1 items-end pointer-events-auto">
                 <button onClick={() => engineRef.current?.toggleView()} className="px-2 py-1 rounded-full border border-white/10 bg-black/25 backdrop-blur-sm text-[9px] font-black text-white/70 active:scale-90">{hud.viewMode.toUpperCase()}</button>
                 <button onClick={() => setAutoFire(!autoFire)} className={`px-2 py-1 rounded-full border text-[9px] font-black backdrop-blur-sm active:scale-90 ${autoFire ? 'border-emerald-300/40 bg-emerald-500/15 text-emerald-200' : 'border-white/10 bg-black/25 text-white/50'}`}>{autoFire ? 'تلقائي ✓' : 'تلقائي'}</button>

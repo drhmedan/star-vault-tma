@@ -44,6 +44,7 @@ export const App: React.FC = () => {
     mapId?: MapId;
     matchInfo?: MatchInfo;
     gameMode?: GameMode;
+    partyTeam?: number;
   } | null>(null);
 
   // Initialize or load user profile
@@ -247,7 +248,7 @@ export const App: React.FC = () => {
   const escrowRef = useRef<{ id: string; verified: boolean; amount: number }>({ id: '', verified: false, amount: 0 });
   const startingMatchRef = useRef(false);
 
-  const handleStartPvPMatch = async (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId: MapId = 'warzone', matchInfo?: MatchInfo, gameMode?: GameMode) => {
+  const handleStartPvPMatch = async (roomCode: string, mode: 'host' | 'join' | 'ai' | 'matchmade', stakeStars: number, mapId: MapId = 'warzone', matchInfo?: MatchInfo, gameMode?: GameMode, partyTeam?: number) => {
     if (startingMatchRef.current) return;
     if (stakeStars > 0 && user.stars < stakeStars) {
       setTab('shop');
@@ -277,7 +278,7 @@ export const App: React.FC = () => {
           setUser(p => ({ ...p, stars: p.stars - stakeStars }));
         }
       }
-      setActiveMatch({ roomCode, mode, stakeStars, mapId, matchInfo, gameMode: matchInfo?.gameMode ?? gameMode ?? 'ffa' });
+      setActiveMatch({ roomCode, mode, stakeStars, mapId, matchInfo, gameMode: matchInfo?.gameMode ?? gameMode ?? 'ffa', partyTeam });
     } finally {
       startingMatchRef.current = false;
     }
@@ -476,6 +477,7 @@ export const App: React.FC = () => {
               mapId={activeMatch.mapId}
               matchInfo={activeMatch.matchInfo}
               gameMode={activeMatch.gameMode}
+              partyTeam={activeMatch.partyTeam}
               onExit={() => setActiveMatch(null)}
               onMatchComplete={handleMatchComplete}
             />
