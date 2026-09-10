@@ -456,6 +456,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     const resolvedMode: GameMode = matchInfo?.gameMode ?? gameMode ?? 'ffa';
     const teamSize = matchInfo?.teamSize ?? (resolvedMode === '2v2' ? 2 : resolvedMode === 'squad' || resolvedMode === 'tdm4v4' ? 4 : 1);
     const tdmMode = resolvedMode === 'tdm4v4';
+    const rankedMode = resolvedMode === 'ranked';
     const teamMode = teamSize >= 2;
     const myPlayer = matchInfo?.players.find((pl) => pl.id === user.id);
     const myTeam = teamMode ? (typeof myPlayer?.team === 'number' ? myPlayer.team : mySlot % 2) : -1;
@@ -650,8 +651,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       const dur = (performance.now() - matchStart) / 1000;
       const acc = p.shotsFired > 0 ? Math.round((p.shotsHit / p.shotsFired) * 100) : 0;
       const xp = Math.round(p.kills * 40 + p.damageDealt * 0.5 + Math.min(120, dur) * 2);
-      const trophies = won ? 25 : -15;
-      const dust = won ? 200 : 30;
+      // Ranked lobbies swing the competitive rating (trophies) harder.
+      const trophies = won ? (rankedMode ? 30 : 25) : (rankedMode ? -18 : -15);
+      const dust = won ? (rankedMode ? 260 : 200) : 30;
       const stars = won && stakeStars > 0 ? Math.floor(stakeStars * 1.8) : 0;
       setStats({
         kills: p.kills, damage: Math.round(p.damageDealt), accuracy: acc,
@@ -678,7 +680,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         won, kills: p.kills, damage: Math.round(p.damageDealt), accuracy: acc,
         durationSec: Math.round(dur), mode, stake: stakeStars, matchId, xp,
         headshots: p.headshots,
-        victoryDropItemId: drop?.id
+        victoryDropItemId: drop?.id,
+        ranked: rankedMode
       })
         .then((final) => {
           setStats((s) => s ? { ...s, stars: final.stars, verified: final.verified } : s);

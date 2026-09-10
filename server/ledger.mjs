@@ -51,10 +51,11 @@ function utcDay(ts) {
 }
 
 /** The authoritative reward rules — mirrors the client display formula. */
-export function computeRewards(won, stake, kills, damage, durationSec) {
+export function computeRewards(won, stake, kills, damage, durationSec, ranked = false) {
   const xp = Math.round(kills * 40 + damage * 0.5 + Math.min(120, durationSec) * 2);
-  const trophies = won ? 25 : -15;
-  const dust = won ? 200 : 30;
+  // Ranked stakes swing the competitive rating harder than casual lobbies.
+  const trophies = won ? (ranked ? 30 : 25) : (ranked ? -18 : -15);
+  const dust = won ? (ranked ? 260 : 200) : 30;
   const stars = won && stake > 0 ? Math.floor(stake * 1.8) : 0;
   return { xp, trophies, dust, stars };
 }
@@ -252,7 +253,7 @@ export function createLedger(options = {}) {
     return { escrowId, balance: p.stars, amount: amt };
   }
 
-  function settle({ matchId, playerId, escrowId, won, kills, damage, accuracy, durationSec, mode, name }) {
+  function settle({ matchId, playerId, escrowId, won, kills, damage, accuracy, durationSec, mode, name, ranked }) {
     if (typeof matchId !== 'string' || matchId.length < 6 || matchId.length > 96) {
       throw ledgerError('invalid', 'معرّف مباراة غير صالح');
     }
@@ -276,7 +277,7 @@ export function createLedger(options = {}) {
 
     checkRateLimits(playerId, isWin);
 
-    const rewards = computeRewards(isWin, stake, k, dmg, dur);
+    const rewards = computeRewards(isWin, stake, k, dmg, dur, ranked === true);
     const today = `${playerId}:${utcDay(Date.now())}`;
     const credited = dayStars.get(today) || 0;
     const room = Math.max(0, cfg.maxStarsPerDay - credited);

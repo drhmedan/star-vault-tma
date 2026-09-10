@@ -69,6 +69,8 @@ export interface MatchCompletion {
   headshots: number;
   /** Vault item id dropped on victory (soft-currency loot). */
   victoryDropItemId?: string;
+  /** Ranked match — the server applies a heavier competitive-rating swing. */
+  ranked?: boolean;
 }
 
 /** One row of the server-side leaderboard. */
@@ -153,7 +155,8 @@ export const ledger = {
       accuracy: result.accuracy,
       durationSec: result.durationSec,
       mode: result.mode,
-      name: result.name
+      name: result.name,
+      ranked: result.ranked === true
     });
   },
 

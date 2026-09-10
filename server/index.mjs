@@ -85,8 +85,11 @@ const MODES = {
     teamSize: 4
   },
   ranked: {
+    // Ranked is grouped by MMR in formRankedRooms() (not the generic tick()):
+    // prefer a full 8-human lobby for the first minute, then form a
+    // shorthanded lobby (4+) from the closest ratings. Never bot-filled.
     maxHumans: Number(process.env.RANKED_MAX_HUMANS || 8),
-    minHumans: 8,
+    minHumans: 4,
     totalFighters: 8,
     fillMs: Number(process.env.RANKED_FILL_MS || 60000),
     allowBotFill: false,
@@ -146,9 +149,33 @@ function formRoom(members, mode) {
   broadcastStatus();
 }
 
+// Ranked grouping: pick the players whose ratings are closest to each other,
+// preferring a full 8-human lobby but settling for a shorthanded 4+ after the
+// oldest player has waited out the window. No bots ever fill a ranked lobby.
+const RANKED_MIN = 4;
+const RANKED_MAX = 8;
+function formRankedRooms(now) {
+  const g = queue.filter((p) => p.mode === 'ranked').sort((a, b) => a.rating - b.rating);
+  if (g.length < RANKED_MIN) return;
+  // The oldest player's wait decides full-vs-shorthanded (join order, not
+  // rating order — sorting by rating above would read the wrong entry).
+  const oldestWait = now - Math.min(...g.map((p) => p.joinedAt));
+  const want = oldestWait >= MODES.ranked.fillMs ? RANKED_MIN : RANKED_MAX;
+  if (g.length < want) return;
+  // Tightest rating window of `want` consecutive players (sorted by rating).
+  let start = 0;
+  let bestSpread = Infinity;
+  for (let i = 0; i + want <= g.length; i++) {
+    const spread = g[i + want - 1].rating - g[i].rating;
+    if (spread < bestSpread) { bestSpread = spread; start = i; }
+  }
+  formRoom(g.slice(start, start + want), 'ranked');
+}
+
 function tick() {
   const now = Date.now();
   for (const mode of Object.keys(MODES)) {
+    if (mode === 'ranked') continue; // handled by formRankedRooms below
     const cfg = MODES[mode];
     const group = queue.filter((p) => p.mode === mode);
     if (group.length === 0) continue;
@@ -165,6 +192,7 @@ function tick() {
       formRoom(group.slice(0, cfg.maxHumans), mode);
     }
   }
+  formRankedRooms(now);
 }
 
 // ---- HTTP app ----
@@ -213,7 +241,8 @@ app.post('/ledger/settle', (req, res) => {
     const settlement = ledger.settle({
       matchId: b.matchId, playerId: b.playerId, escrowId: b.escrowId,
       won: b.won, kills: b.kills, damage: b.damage, accuracy: b.accuracy,
-      durationSec: b.durationSec, mode: b.mode, name: b.name
+      durationSec: b.durationSec, mode: b.mode, name: b.name,
+      ranked: b.ranked === true
     });
     res.json(settlement);
   } catch (err) {
@@ -324,11 +353,13 @@ matchWss.on('connection', (ws) => {
       // can't lie their way into a different lobby shape).
       const mode = MODES[p.mode] ? p.mode : 'quick';
       const teamSize = MODES[mode].teamSize;
+      // Competitive rating (trophy count) — used only by ranked grouping.
+      const rating = Number.isFinite(p.rating) ? Math.max(0, Math.floor(p.rating)) : 0;
       if (bySocket.has(ws)) leaveQueue(ws);
-      const entry = { ws, id, name, teamSize, mode, joinedAt: Date.now() };
+      const entry = { ws, id, name, teamSize, mode, rating, joinedAt: Date.now() };
       queue.push(entry);
       bySocket.set(ws, entry);
-      log(`player ${name} queued (mode=${mode}, team=${teamSize}, waiting=${queue.length})`);
+      log(`player ${name} queued (mode=${mode}, rating=${rating}, waiting=${queue.length})`);
       broadcastStatus();
       return;
     }

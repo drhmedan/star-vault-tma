@@ -50,6 +50,8 @@ export type QueueParams = {
   teamSize: number;
   mode: GameMode;
   url: string;
+  /** Competitive rating (trophy count) — only used by ranked grouping. */
+  rating?: number;
 };
 
 const CONNECT_TIMEOUT_MS = 8000;
@@ -76,7 +78,7 @@ export class MatchmakingClient {
     ws.onopen = () => {
       ws.send(JSON.stringify({
         type: 'queue',
-        payload: { id: params.userId, name: params.name, teamSize: params.teamSize, mode: params.mode }
+        payload: { id: params.userId, name: params.name, teamSize: params.teamSize, mode: params.mode, rating: params.rating ?? 0 }
       }));
     };
 

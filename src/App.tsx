@@ -387,8 +387,9 @@ export const App: React.FC = () => {
       const drop = { ...ALL_ITEMS[result.victoryDropItemId] };
       setUser(p => ({ ...p, inventory: [drop, ...p.inventory] }));
     }
-    const localTrophies = result.won ? 25 : -15;
-    const localDust = result.won ? 200 : 30;
+    // Ranked lobbies swing the competitive rating harder (mirrors the server).
+    const localTrophies = result.ranked ? (result.won ? 30 : -18) : (result.won ? 25 : -15);
+    const localDust = result.ranked ? (result.won ? 260 : 30) : (result.won ? 200 : 30);
     const localStars = result.won && result.stake > 0 ? Math.floor(result.stake * 1.8) : 0;
 
     const applyLocal = (): SettleOutcome => {

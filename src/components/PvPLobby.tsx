@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Bot, Check, Crosshair, Flame, LockKeyhole, Map as MapIcon, Radar, Share2, Shield, Sparkles, Swords, Users, X, Zap } from 'lucide-react';
+import { ArrowLeft, Bot, Check, Crosshair, Flame, LockKeyhole, Map as MapIcon, Radar, Share2, Shield, Sparkles, Swords, Trophy, Users, X, Zap } from 'lucide-react';
 import { UserProfile } from '../types';
 import { sound } from '../audio/soundEngine';
 import { MapId } from '../game3d/types3d';
@@ -16,15 +16,15 @@ interface PvPLobbyProps {
 
 const stakeOptions = [0, 25, 100];
 
-// Playable modes: solo queues (quick/ffa), team elimination (2v2/squad) and
-// respawn team deathmatch (tdm4v4). Bots always fill empty seats so nobody
-// ever waits out the gathering window.
-const MODE_CATALOG: { id: GameMode; nameAr: string; descAr: string; tag: string; fighters: number; teamSize: number; gatherSec: number; featured?: boolean }[] = [
+// Playable modes: solo queues (quick/ffa), team elimination (2v2/squad),
+// respawn team deathmatch (tdm4v4) and MMR-ranked (humans only, no bots).
+const MODE_CATALOG: { id: GameMode; nameAr: string; descAr: string; tag: string; fighters: number; teamSize: number; gatherSec: number; ranked?: boolean }[] = [
   { id: 'quick', nameAr: 'مواجهة سريعة', descAr: '1 ضد 1 + بوتات تكتيكية', tag: 'فوري', fighters: 8, teamSize: 1, gatherSec: 30 },
   { id: 'ffa', nameAr: 'معركة حرة', descAr: 'كل مقاتل لنفسه · حتى ٨', tag: 'FFA', fighters: 8, teamSize: 1, gatherSec: 30 },
   { id: '2v2', nameAr: 'ثنائي ضد ثنائي', descAr: 'فريقان · آخر فريق صامد', tag: '2×2', fighters: 4, teamSize: 2, gatherSec: 45 },
   { id: 'squad', nameAr: 'فرق ٤ ضد ٤', descAr: 'فريقان كاملان · آخر فريق صامد', tag: '4×4', fighters: 8, teamSize: 4, gatherSec: 60 },
-  { id: 'tdm4v4', nameAr: 'صراع الفرق · عودة سريعة', descAr: '٤ ضد ٤ · إحياء فوري · أول فريق يبلغ ٢٥ قتلة', tag: 'TDM', fighters: 8, teamSize: 4, gatherSec: 60, featured: true }
+  { id: 'tdm4v4', nameAr: 'صراع الفرق · عودة سريعة', descAr: '٤ ضد ٤ · إحياء فوري · أول فريق يبلغ ٢٥ قتلة', tag: 'TDM', fighters: 8, teamSize: 4, gatherSec: 60 },
+  { id: 'ranked', nameAr: 'التنافسي المُصنّف', descAr: '٨ لاعبين بمستواك · بلا بوتات · كؤوس أعلى', tag: 'RANKED', fighters: 8, teamSize: 1, gatherSec: 60, ranked: true }
 ];
 
 export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLoadout }) => {
@@ -49,9 +49,11 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
 
   const beginSearch = () => {
     sound.playClick();
+    // Ranked is server-only: no backend means no ranked queue.
+    if (activeMode.ranked && !config.matchmakerAvailable) return;
     startingRef.current = false;
     setQueueWaiting(0);
-    setSecondsLeft(activeMode.gatherSec);
+    setSecondsLeft(activeMode.ranked ? 0 : activeMode.gatherSec);
     setSearching(true);
   };
 
@@ -89,7 +91,7 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
     const client = new MatchmakingClient();
     searchRef.current = client;
     client.start(
-      { userId: user.id, name: user.firstName, teamSize: activeMode.teamSize, mode: selectedMode, url: config.matchmakerUrl },
+      { userId: user.id, name: user.firstName, teamSize: activeMode.teamSize, mode: selectedMode, url: config.matchmakerUrl, rating: activeMode.ranked ? Math.max(0, Math.floor(user.trophies || 0)) : undefined },
       (e) => {
         if (e.type === 'status') {
           setQueueWaiting(e.waiting);
@@ -108,7 +110,8 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
           };
           start('matchmade', e.room.roomCode, stakeStars, info, e.room.mode);
         } else if (e.type === 'error' || (e.type === 'closed' && e.reason === 'network')) {
-          if (!startingRef.current) { startingRef.current = true; startSoloFallback(); }
+          // Ranked never falls back to a bot lobby — it waits for real humans.
+          if (!activeMode.ranked && !startingRef.current) { startingRef.current = true; startSoloFallback(); }
         }
       }
     );
@@ -150,11 +153,15 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
             <Radar className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 text-cyan-300/25" />
           </div>
 
-          <h2 className="mt-6 text-2xl font-black text-white text-center">جاري البحث عن خصم…</h2>
+          <h2 className="mt-6 text-2xl font-black text-white text-center">
+            {activeMode.ranked ? 'جاري البحث عن لاعبين بمستواك…' : 'جاري البحث عن خصم…'}
+          </h2>
           <p className="mt-1.5 text-xs text-slate-400 text-center">
-            {config.matchmakerAvailable
-              ? `${queueWaiting} لاعب في الطابور الآن · ${activeMode.nameAr} من ${totalFighters} مقاتلين`
-              : `وضع التدريب — تجهيز مباراة ${activeMode.nameAr} بالبوتات`}
+            {activeMode.ranked
+              ? `${queueWaiting} لاعب في طابور التنافسي · رتبتك: ${rankForTrophies(user.trophies).icon} ${rankForTrophies(user.trophies).nameAr} · بلا بوتات`
+              : config.matchmakerAvailable
+                ? `${queueWaiting} لاعب في الطابور الآن · ${activeMode.nameAr} من ${totalFighters} مقاتلين`
+                : `وضع التدريب — تجهيز مباراة ${activeMode.nameAr} بالبوتات`}
           </p>
 
           {/* Fighter slots filling */}
@@ -171,26 +178,37 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
             </p>
           )}
 
-          {/* Countdown ring */}
-          <div className="mt-8 flex flex-col items-center">
-            <div className="relative w-20 h-20">
-              <svg viewBox="0 0 80 80" className="w-20 h-20 -rotate-90">
-                <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="5" />
-                <circle cx="40" cy="40" r="34" fill="none" stroke="#22d3ee" strokeWidth="5" strokeLinecap="round"
-                  strokeDasharray={`${(secondsLeft / activeMode.gatherSec) * 213.6} 213.6`} className="transition-all duration-1000" />
-              </svg>
-              <div className="absolute inset-0 grid place-items-center text-2xl font-black font-mono text-white tabular-nums">{secondsLeft}</div>
+          {/* Countdown ring (skipped in ranked — it waits for real players) */}
+          {activeMode.ranked ? (
+            <div className="mt-8 flex flex-col items-center">
+              <div className="grid place-items-center w-20 h-20 rounded-full border border-rose-300/30 bg-rose-400/10">
+                <Trophy className="w-8 h-8 text-rose-300" />
+              </div>
+              <p className="mt-2 text-[10px] font-bold text-slate-500">بانتظار لاعبين من مستواك — بلا بوتات</p>
             </div>
-            <p className="mt-2 text-[10px] font-bold text-slate-500">
-              {secondsLeft > 0 ? 'تبدأ المباراة خلال ثوانٍ' : 'جارٍ تجهيز الساحة بالبوتات…'}
-            </p>
-          </div>
+          ) : (
+            <div className="mt-8 flex flex-col items-center">
+              <div className="relative w-20 h-20">
+                <svg viewBox="0 0 80 80" className="w-20 h-20 -rotate-90">
+                  <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="5" />
+                  <circle cx="40" cy="40" r="34" fill="none" stroke="#22d3ee" strokeWidth="5" strokeLinecap="round"
+                    strokeDasharray={`${(secondsLeft / activeMode.gatherSec) * 213.6} 213.6`} className="transition-all duration-1000" />
+                </svg>
+                <div className="absolute inset-0 grid place-items-center text-2xl font-black font-mono text-white tabular-nums">{secondsLeft}</div>
+              </div>
+              <p className="mt-2 text-[10px] font-bold text-slate-500">
+                {secondsLeft > 0 ? 'تبدأ المباراة خلال ثوانٍ' : 'جارٍ تجهيز الساحة بالبوتات…'}
+              </p>
+            </div>
+          )}
         </div>
 
-        <p className="relative text-[10px] text-slate-600 text-center leading-relaxed">
-          <Sparkles className="inline w-3 h-3 text-amber-300 ml-1" />
-          لا خصم؟ نملأ الساحة ببوتات تكتيكية حتى لا تنتظر أبداً
-        </p>
+        {!activeMode.ranked && (
+          <p className="relative text-[10px] text-slate-600 text-center leading-relaxed">
+            <Sparkles className="inline w-3 h-3 text-amber-300 ml-1" />
+            لا خصم؟ نملأ الساحة ببوتات تكتيكية حتى لا تنتظر أبداً
+          </p>
+        )}
 
         <style>{`
           @keyframes radar { to { transform: rotate(360deg); } }
@@ -246,20 +264,29 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
           {MODE_CATALOG.map((m) => {
             const selected = selectedMode === m.id;
             const team = m.teamSize > 1;
+            const locked = m.ranked && !config.matchmakerAvailable;
+            // Ranked gets a rose competitive accent; teams emerald; solo cyan.
+            const border = m.ranked ? 'border-rose-300/60 shadow-[0_0_30px_rgba(251,113,133,.16)]' : team ? 'border-emerald-300/60 shadow-[0_0_30px_rgba(52,211,153,.16)]' : 'border-cyan-300/60 shadow-[0_0_30px_rgba(34,211,238,.16)]';
+            const grad = m.ranked ? 'bg-gradient-to-br from-rose-500/15 via-[#0a0f1a]/80 to-[#0a0f1a]' : team ? 'bg-gradient-to-br from-emerald-500/15 via-[#0a0f1a]/80 to-[#0a0f1a]' : 'bg-gradient-to-br from-cyan-500/15 via-[#0a0f1a]/80 to-[#0a0f1a]';
+            const tagCls = m.ranked ? 'border-rose-300/30 bg-rose-300/10 text-rose-300' : team ? 'border-emerald-300/30 bg-emerald-300/10 text-emerald-300' : 'border-cyan-300/30 bg-cyan-300/10 text-cyan-300';
+            const checkBg = m.ranked ? 'bg-rose-300' : team ? 'bg-emerald-300' : 'bg-cyan-300';
             return (
-              <button key={m.id} onClick={() => { sound.playClick(); setSelectedMode(m.id); }}
-                className={`group relative overflow-hidden rounded-2xl border p-3 text-right transition-all duration-200 ${m.featured ? 'col-span-2' : ''} ${selected ? (team ? 'border-emerald-300/60 shadow-[0_0_30px_rgba(52,211,153,.16)]' : 'border-cyan-300/60 shadow-[0_0_30px_rgba(34,211,238,.16)]') : 'border-white/10 hover:border-white/25'}`}>
-                <div className={`absolute inset-0 ${selected ? (team ? 'bg-gradient-to-br from-emerald-500/15 via-[#0a0f1a]/80 to-[#0a0f1a]' : 'bg-gradient-to-br from-cyan-500/15 via-[#0a0f1a]/80 to-[#0a0f1a]') : 'bg-[#0a0f1a]/85'}`} />
+              <button key={m.id} disabled={locked}
+                onClick={() => { sound.playClick(); setSelectedMode(m.id); }}
+                className={`group relative overflow-hidden rounded-2xl border p-3 text-right transition-all duration-200 ${locked ? 'opacity-40 cursor-not-allowed' : ''} ${selected ? border : 'border-white/10 hover:border-white/25'}`}>
+                <div className={`absolute inset-0 ${selected ? grad : 'bg-[#0a0f1a]/85'}`} />
                 <div className="relative flex flex-col gap-2">
                   <div className="flex items-start justify-between">
-                    <span className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[9px] font-mono font-black ${team ? 'border-emerald-300/30 bg-emerald-300/10 text-emerald-300' : 'border-cyan-300/30 bg-cyan-300/10 text-cyan-300'}`}>{m.tag}</span>
+                    <span className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[9px] font-mono font-black ${tagCls}`}>{m.tag}</span>
                     {selected
-                      ? <span className={`grid place-items-center w-6 h-6 rounded-full ${team ? 'bg-emerald-300' : 'bg-cyan-300'} text-slate-950`}><Check className="h-3.5 w-3.5" strokeWidth={3} /></span>
+                      ? <span className={`grid place-items-center w-6 h-6 rounded-full ${checkBg} text-slate-950`}><Check className="h-3.5 w-3.5" strokeWidth={3} /></span>
                       : <span className="w-6 h-6 rounded-full border border-white/15" />}
                   </div>
                   <div>
                     <p className="text-sm font-black text-white">{m.nameAr}</p>
-                    <p className="mt-0.5 text-[10px] text-slate-400 leading-relaxed">{m.descAr}</p>
+                    <p className="mt-0.5 text-[10px] text-slate-400 leading-relaxed">
+                      {locked ? 'يتطلب الاتصال بخوادم المطابقة' : m.descAr}
+                    </p>
                   </div>
                 </div>
               </button>
@@ -332,9 +359,11 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
           <div className="flex-1">
             <p className="text-base font-black text-white">بحث سريع عن معركة · {activeMode.nameAr}</p>
             <p className="mt-0.5 text-xs text-cyan-100/60">
-              {config.matchmakerAvailable
-                ? `تجهيز خلال ${activeMode.gatherSec} ثانية · ${totalFighters} مقاتلين${activeMode.teamSize > 1 ? ' · فريقان' : ''}`
-                : `معركة بوتات فورية · ${totalFighters} مقاتلين${activeMode.teamSize > 1 ? ' · فريقان' : ''}`}
+              {activeMode.ranked
+                ? `تجميع ٨ لاعبين بمستواك (${rankForTrophies(user.trophies).nameAr}) · بلا بوتات`
+                : config.matchmakerAvailable
+                  ? `تجهيز خلال ${activeMode.gatherSec} ثانية · ${totalFighters} مقاتلين${activeMode.teamSize > 1 ? ' · فريقان' : ''}`
+                  : `معركة بوتات فورية · ${totalFighters} مقاتلين${activeMode.teamSize > 1 ? ' · فريقان' : ''}`}
             </p>
           </div>
           <ArrowLeft className="h-5 w-5 rotate-180 text-cyan-200 transition group-hover:-translate-x-1" />
