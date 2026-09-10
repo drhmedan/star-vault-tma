@@ -13,7 +13,7 @@ export interface MatchedPlayer {
   team?: number;
 }
 
-export type GameMode = 'quick' | 'ffa' | '2v2' | 'squad' | 'ranked';
+export type GameMode = 'quick' | 'ffa' | '2v2' | 'squad' | 'ranked' | 'tdm4v4';
 
 export interface MatchRoom {
   roomCode: string;

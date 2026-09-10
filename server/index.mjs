@@ -76,6 +76,14 @@ const MODES = {
     allowBotFill: true,
     teamSize: 4
   },
+  tdm4v4: {
+    maxHumans: 8,
+    minHumans: 2,
+    totalFighters: 8,
+    fillMs: Number(process.env.TDM_FILL_MS || 60000),
+    allowBotFill: true,
+    teamSize: 4
+  },
   ranked: {
     maxHumans: Number(process.env.RANKED_MAX_HUMANS || 8),
     minHumans: 8,

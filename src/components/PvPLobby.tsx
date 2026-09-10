@@ -16,14 +16,15 @@ interface PvPLobbyProps {
 
 const stakeOptions = [0, 25, 100];
 
-// Playable modes: solo queues (quick/ffa) and team elimination queues
-// (2v2/squad). Bots always fill empty seats so nobody ever waits out the
-// gathering window.
-const MODE_CATALOG: { id: GameMode; nameAr: string; descAr: string; tag: string; fighters: number; teamSize: number; gatherSec: number }[] = [
+// Playable modes: solo queues (quick/ffa), team elimination (2v2/squad) and
+// respawn team deathmatch (tdm4v4). Bots always fill empty seats so nobody
+// ever waits out the gathering window.
+const MODE_CATALOG: { id: GameMode; nameAr: string; descAr: string; tag: string; fighters: number; teamSize: number; gatherSec: number; featured?: boolean }[] = [
   { id: 'quick', nameAr: 'مواجهة سريعة', descAr: '1 ضد 1 + بوتات تكتيكية', tag: 'فوري', fighters: 8, teamSize: 1, gatherSec: 30 },
   { id: 'ffa', nameAr: 'معركة حرة', descAr: 'كل مقاتل لنفسه · حتى ٨', tag: 'FFA', fighters: 8, teamSize: 1, gatherSec: 30 },
   { id: '2v2', nameAr: 'ثنائي ضد ثنائي', descAr: 'فريقان · آخر فريق صامد', tag: '2×2', fighters: 4, teamSize: 2, gatherSec: 45 },
-  { id: 'squad', nameAr: 'فرق ٤ ضد ٤', descAr: 'فريقان كاملان · بوتات تكمل', tag: '4×4', fighters: 8, teamSize: 4, gatherSec: 60 }
+  { id: 'squad', nameAr: 'فرق ٤ ضد ٤', descAr: 'فريقان كاملان · آخر فريق صامد', tag: '4×4', fighters: 8, teamSize: 4, gatherSec: 60 },
+  { id: 'tdm4v4', nameAr: 'صراع الفرق · عودة سريعة', descAr: '٤ ضد ٤ · إحياء فوري · أول فريق يبلغ ٢٥ قتلة', tag: 'TDM', fighters: 8, teamSize: 4, gatherSec: 60, featured: true }
 ];
 
 export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLoadout }) => {
@@ -247,7 +248,7 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
             const team = m.teamSize > 1;
             return (
               <button key={m.id} onClick={() => { sound.playClick(); setSelectedMode(m.id); }}
-                className={`group relative overflow-hidden rounded-2xl border p-3 text-right transition-all duration-200 ${selected ? (team ? 'border-emerald-300/60 shadow-[0_0_30px_rgba(52,211,153,.16)]' : 'border-cyan-300/60 shadow-[0_0_30px_rgba(34,211,238,.16)]') : 'border-white/10 hover:border-white/25'}`}>
+                className={`group relative overflow-hidden rounded-2xl border p-3 text-right transition-all duration-200 ${m.featured ? 'col-span-2' : ''} ${selected ? (team ? 'border-emerald-300/60 shadow-[0_0_30px_rgba(52,211,153,.16)]' : 'border-cyan-300/60 shadow-[0_0_30px_rgba(34,211,238,.16)]') : 'border-white/10 hover:border-white/25'}`}>
                 <div className={`absolute inset-0 ${selected ? (team ? 'bg-gradient-to-br from-emerald-500/15 via-[#0a0f1a]/80 to-[#0a0f1a]' : 'bg-gradient-to-br from-cyan-500/15 via-[#0a0f1a]/80 to-[#0a0f1a]') : 'bg-[#0a0f1a]/85'}`} />
                 <div className="relative flex flex-col gap-2">
                   <div className="flex items-start justify-between">
