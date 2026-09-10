@@ -1,0 +1,15 @@
+{
+  "name": "star-vault-matchserver",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Star Vault — matchmaking + WebRTC signaling server (Koyeb free tier)",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "peer": "^1.0.2",
+    "ws": "^8.18.0"
+  }
+}
