@@ -687,6 +687,32 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       return camera.position.clone();
     }
 
+    // ------------------------------------------------------------
+    // Aim assist (PUBG Mobile / Free Fire style)
+    // ------------------------------------------------------------
+    // Bullet magnetism: when the crosshair is a hair off an enemy, the shot
+    // bends toward the nearest hit zone so touch aiming stays forgiving —
+    // while still demanding the player aims in the right place. Tuned for
+    // touch devices only; mouse players get the pure aim experience.
+    const touchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+    let aimStick = 0; // 0..1 crosshair "hug" on a target (ADS slowdown)
+
+    function nearestEnemyAim(origin: THREE.Vector3, dir: THREE.Vector3, range: number): { dir: THREE.Vector3; ang: number } | null {
+      let best: { dir: THREE.Vector3; ang: number } | null = null;
+      for (const u of enemyUnits) {
+        if (!u.state.alive) continue;
+        u.soldier.root.updateMatrixWorld(true);
+        const c = u.soldier.hitBody.getWorldPosition(new THREE.Vector3());
+        const to = c.sub(origin);
+        const dist = to.length();
+        if (dist < 1.5 || dist > range) continue;
+        const toDir = to.normalize();
+        const ang = dir.angleTo(toDir);
+        if (!best || ang < best.ang) best = { dir: toDir, ang };
+      }
+      return best;
+    }
+
     function triggerExplosion(pos: THREE.Vector3, radius: number) {
       const light = new THREE.PointLight(0xf97316, 20, 30);
       light.position.copy(pos);
@@ -748,7 +774,20 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
       const adsBlend = aimRef.current ? 1 : 0;
       const spread = w.def.spreadHip * (1 - adsBlend) + w.def.spreadAds * adsBlend + p.bloom;
-      const baseDir = shootDir();
+      const origin = shotOrigin();
+      let baseDir = shootDir();
+
+      // Bullet magnetism: nudge the aim cone toward a nearby enemy on touch.
+      if (touchDevice && phaseRef.current === 'combat' && w.def.type !== 'rpg') {
+        const magnet = nearestEnemyAim(origin, baseDir, w.def.range);
+        if (magnet) {
+          const cone = aimRef.current ? 0.03 : 0.05;
+          if (magnet.ang < cone) {
+            const strength = aimRef.current ? 0.85 : 0.55;
+            baseDir = baseDir.clone().lerp(magnet.dir, strength).normalize();
+          }
+        }
+      }
 
       sound.playGunshot(w.def.type);
       tgHaptics.impact(w.def.type === 'awm' || w.def.type === 'rpg' ? 'heavy' : 'medium');
@@ -783,7 +822,6 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       }
 
       const muzzlePos = muzzleWorld();
-      const origin = shotOrigin();
       for (let i = 0; i < w.def.pellets; i++) {
         const jitter = new THREE.Vector3(
           (Math.random() - 0.5) * 2 * spread,
@@ -1011,13 +1049,29 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         const eyeB = b.pos.clone().add(new THREE.Vector3(0, 1.5, 0));
         const eyeP = p.pos.clone().add(new THREE.Vector3(0, 1.4, 0));
         const canSee = !lineBlocked(obstacles, eyeB, eyeP);
-        if (canSee && dist < 130) { b.spotted = true; b.lastKnown.copy(p.pos); }
+        if (canSee && dist < 95) {
+          if (!b.spotted) {
+            // Reaction time: a bot needs a beat to acquire a fresh target.
+            b.lastFire = Math.max(b.lastFire, now + 350 + Math.random() * 650);
+          }
+          b.spotted = true;
+          b.lastKnown.copy(p.pos);
+        }
+
+        // Aggro budget: only a couple of bots pressure the player at once, so
+        // a full lobby stays a fair, readable fight instead of a firing squad.
+        const AGGRESSIVE: EnemyState['state'][] = ['hunt', 'engage', 'flank', 'push'];
+        const activeAttackers = enemyUnits.reduce((n, x) => (
+          n + (x.state !== b && !x.state.isHuman && x.state.alive && AGGRESSIVE.includes(x.state.state) ? 1 : 0)
+        ), 0);
+        const canEngage = activeAttackers < 2 || dist < 18 || AGGRESSIVE.includes(b.state);
 
         const hpPct = b.hp / 100;
         if (b.stateT > 0.9 + Math.random() * 1.2) {
           b.stateT = 0;
           b.dodgeDir = Math.random() > 0.5 ? 1 : -1;
-          if (!b.spotted && dist > 60) b.state = 'patrol';
+          if (!canEngage && dist > 18) b.state = Math.random() < 0.5 ? 'patrol' : 'take_cover';
+          else if (!b.spotted && dist > 60) b.state = 'patrol';
           else if (hpPct < 0.25) b.state = 'retreat';
           else if (hpPct < 0.5 && Math.random() < 0.35) b.state = 'take_cover';
           else if (dist > 55) b.state = 'hunt';
@@ -1028,7 +1082,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         }
 
         const faceAngle = b.state === 'retreat' ? angToPlayer + Math.PI : angToPlayer;
-        const rotSpeed = dist < 15 ? 14 : 9;
+        const rotSpeed = dist < 15 ? 7 : 4.5;
         b.yaw += (faceAngle - b.yaw) * Math.min(1, dt * rotSpeed);
         botSoldier.root.rotation.y = b.yaw;
 
@@ -1046,17 +1100,17 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
               );
               b.pauseT = 0.8 + Math.random() * 1.8;
             } else {
-              speed = 4.2;
+              speed = 3.4;
               moveAngle = Math.atan2(b.patrolTarget.x - b.pos.x, b.patrolTarget.z - b.pos.z);
             }
             break;
           }
-          case 'hunt': speed = 7.4; moveAngle = angToPlayer; break;
-          case 'engage': speed = 4.6; moveAngle = angToPlayer + b.dodgeDir * 0.4; break;
-          case 'flank': speed = 5.8; moveAngle = angToPlayer + b.dodgeDir * (Math.PI * 0.42); break;
-          case 'take_cover': speed = 5.2; moveAngle = angToPlayer + Math.PI * 0.5 * b.dodgeDir; break;
-          case 'push': speed = 7.6; moveAngle = angToPlayer; break;
-          case 'retreat': speed = 5.4; moveAngle = angToPlayer + Math.PI + b.dodgeDir * 0.6; break;
+          case 'hunt': speed = 5.6; moveAngle = angToPlayer; break;
+          case 'engage': speed = 4.0; moveAngle = angToPlayer + b.dodgeDir * 0.4; break;
+          case 'flank': speed = 4.7; moveAngle = angToPlayer + b.dodgeDir * (Math.PI * 0.42); break;
+          case 'take_cover': speed = 4.4; moveAngle = angToPlayer + Math.PI * 0.5 * b.dodgeDir; break;
+          case 'push': speed = 6.0; moveAngle = angToPlayer; break;
+          case 'retreat': speed = 4.3; moveAngle = angToPlayer + Math.PI + b.dodgeDir * 0.6; break;
           case 'heal': speed = 0; break;
         }
 
@@ -1084,13 +1138,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
 
         botSoldier.root.position.copy(b.pos);
 
-        // ---- Firing ----
+        // ---- Firing (combat only; gentler, fairer pressure) ----
+        if (phaseRef.current !== 'combat') continue;
         if (b.reloadingUntil > now) continue;
         if (b.ammo <= 0) { b.reloadingUntil = now + 2200; b.ammo = 30; sound.playReload(); continue; }
 
         const longRange = dist > 60;
-        const accBase = longRange ? 0.15 : dist < 15 ? 0.7 : 0.4;
-        const fireInterval = longRange ? 900 : dist < 12 ? 150 : 260;
+        // Mild difficulty ramp: bots sharpen slightly as the match drags on.
+        const accRamp = 0.85 + 0.25 * Math.min(1, (now - matchStart) / 240000);
+        const accBase = (longRange ? 0.11 : dist < 15 ? 0.42 : 0.28) * accRamp;
+        const fireInterval = longRange ? 1200 : dist < 12 ? 430 : 560;
 
         // Bot carries a long gun at range, a rifle up close.
         const botWep: WeaponType = longRange ? 'awm' : 'ak47';
@@ -1099,12 +1156,12 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           botSoldier.setWeapon(botWep);
         }
 
-        if (b.spotted && dist < 110 && now - b.lastFire > fireInterval) {
+        if (b.spotted && dist < 85 && now - b.lastFire > fireInterval) {
           b.lastFire = now;
           b.burstCount += 1;
-          if (b.burstCount > (3 + Math.floor(Math.random() * 3))) {
+          if (b.burstCount > (2 + Math.floor(Math.random() * 3))) {
             b.burstCount = 0;
-            b.lastFire = now + 500 + Math.random() * 500;
+            b.lastFire = now + 600 + Math.random() * 600;
           }
           b.ammo -= 1;
 
@@ -1130,8 +1187,8 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           activeTracers.push({ line, ttl: 0.09 });
 
           if (canSee && Math.random() < accBase) {
-            const dmg = 7 + Math.floor(Math.random() * 9);
-            const headshot = Math.random() < 0.12;
+            const dmg = 6 + Math.floor(Math.random() * 6);
+            const headshot = Math.random() < 0.08;
             damagePlayer(headshot ? dmg * 2.5 : dmg, b.pos);
             if (headshot) pushFeed('أصابك البوت في الرأس!', '🎯');
           } else if (Math.random() < 0.3) {
@@ -1140,7 +1197,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         }
 
         // ---- Grenade at player behind cover ----
-        if (b.spotted && dist > 10 && dist < 40 && !canSee && now - b.lastGrenade > 9000 + Math.random() * 5000) {
+        if (phaseRef.current === 'combat' && b.spotted && dist > 10 && dist < 40 && !canSee && now - b.lastGrenade > 12000 + Math.random() * 6000) {
           b.lastGrenade = now;
           const grp = new THREE.Group();
           grp.add(new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshStandardMaterial({ color: 0x4a5f3a, roughness: 0.6 })));
@@ -1311,8 +1368,10 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       },
       setMove: (x, y) => { moveVecRef.current = { x, y }; },
       addLook: (dx, dy) => {
-        // Slower, steadier aim; ADS applies extra slowdown for fine control.
-        const sens = 0.0022 * (aimRef.current ? 0.55 : 1);
+        // Slower, steadier aim; ADS applies extra slowdown for fine control,
+        // and hugging a target (sticky aim) eases tracking on touch devices.
+        const stick = aimRef.current ? aimStick * 0.55 : 0;
+        const sens = 0.0022 * (aimRef.current ? 0.55 : 1) * (1 - stick);
         p.yaw -= dx * sens;
         p.pitch -= dy * sens;
         p.pitch = Math.max(-1.45, Math.min(1.45, p.pitch));
@@ -2006,6 +2065,14 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
           x: +p.pos.x.toFixed(2), y: +p.pos.y.toFixed(2), z: +p.pos.z.toFixed(2),
           yaw: +p.yaw.toFixed(2), isCrouching: p.crouched
         });
+      }
+
+      // ---- Sticky aim: measure how tightly the crosshair hugs a target ----
+      if (aimRef.current && touchDevice && phase === 'combat') {
+        const stickTarget = nearestEnemyAim(shotOrigin(), shootDir(), 260);
+        aimStick = stickTarget ? THREE.MathUtils.clamp(1 - stickTarget.ang / 0.07, 0, 1) : 0;
+      } else {
+        aimStick = 0;
       }
 
       // ---- HUD sync ----
