@@ -555,6 +555,68 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       tracerPool.push(line);
     };
 
+    // ---- Death markers: a fading beacon at every fallen fighter's position ----
+    // Team-colored holograms (emerald for squadmates, rose for hostiles, amber
+    // for the player) so the action leaves a readable trail on the field and
+    // on the minimap.
+    interface DeathMarker {
+      pos: THREE.Vector3; team: number; self: boolean; created: number;
+      group: THREE.Group; beam: THREE.Mesh; gem: THREE.Mesh;
+      beamMat: THREE.MeshBasicMaterial; gemMat: THREE.MeshBasicMaterial;
+    }
+    const MARKER_LIFETIME = 30000;
+    const MARKER_FADE_MS = 5000;
+    const deathMarkers: DeathMarker[] = [];
+    const markerPool: DeathMarker[] = [];
+    const deathMarkerColor = (team: number, self: boolean): number => (self ? 0xfbbf24 : team === myTeam ? 0x34d399 : 0xf43f5e);
+
+    const acquireDeathMarker = (pos: THREE.Vector3, team: number, self = false): void => {
+      let m = markerPool.pop();
+      const color = deathMarkerColor(team, self);
+      if (m) {
+        m.pos.copy(pos); m.team = team; m.self = self; m.created = performance.now();
+        m.beamMat.color.set(color); m.gemMat.color.set(color);
+        m.beamMat.opacity = 0.85; m.gemMat.opacity = 0.95;
+        m.gem.scale.setScalar(1); m.beam.scale.y = 1;
+        m.group.visible = true;
+        scene.add(m.group);
+      } else {
+        const group = new THREE.Group();
+        const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 3.4, 8),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false }));
+        beam.position.y = 1.7;
+        group.add(beam);
+        const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.26, 0),
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false }));
+        gem.position.y = 3.4;
+        group.add(gem);
+        group.position.copy(pos);
+        scene.add(group);
+        m = { pos: pos.clone(), team, self, created: performance.now(), group, beam, gem, beamMat: beam.material as THREE.MeshBasicMaterial, gemMat: gem.material as THREE.MeshBasicMaterial };
+      }
+      deathMarkers.push(m);
+    };
+    const releaseDeathMarker = (m: DeathMarker): void => {
+      scene.remove(m.group);
+      m.group.visible = false;
+      markerPool.push(m);
+    };
+    const updateDeathMarkers = (dt: number, now: number): void => {
+      for (let i = deathMarkers.length - 1; i >= 0; i--) {
+        const m = deathMarkers[i];
+        const age = now - m.created;
+        if (age > MARKER_LIFETIME) { deathMarkers.splice(i, 1); releaseDeathMarker(m); continue; }
+        const fade = age > MARKER_LIFETIME - MARKER_FADE_MS ? Math.max(0, (MARKER_LIFETIME - age) / MARKER_FADE_MS) : 1;
+        const pulse = 1 + Math.sin(now * 0.005 + m.created) * 0.08;
+        m.beamMat.opacity = 0.85 * fade;
+        m.gemMat.opacity = 0.95 * fade;
+        m.gem.rotation.y += dt * 2.2;
+        m.gem.scale.setScalar(pulse * (0.4 + 0.6 * fade));
+        m.beam.scale.y = pulse;
+        m.group.position.y = getHeightAt(m.pos.x, m.pos.z);
+      }
+    };
+
     interface Particle { mesh: THREE.Mesh; vel: THREE.Vector3; life: number; maxLife: number; gravity: number; }
     const particles: Particle[] = [];
     const particleGeo = new THREE.SphereGeometry(0.05, 5, 4);
@@ -772,6 +834,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       }
       if (p.hp <= 0) {
         p.alive = false;
+        acquireDeathMarker(p.pos, myTeam, true);
         if (tdmMode) {
           // Respawn TDM: the round continues — the enemy scores the kill and
           // this fighter re-drops at the squad spawn after a short wait.
@@ -812,6 +875,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       if (enemy.hp <= 0) {
         enemy.alive = false;
         p.kills += 1;
+        acquireDeathMarker(enemy.pos, enemy.team);
         sound.playKillConfirm();
         tgHaptics.notification('success');
         setCenterMsg({ text: headshot ? 'إصابة رأس قاتلة!' : 'تم القضاء على الهدف', sub: headshot ? 'HEADSHOT' : 'ELIMINATED', key: Date.now() });
@@ -849,6 +913,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       // victim's own client already applies this bot's damage locally.
       if (enemy.hp <= 0) {
         enemy.alive = false;
+        acquireDeathMarker(enemy.pos, enemy.team);
         if (tdmMode) {
           // Score the kill for whoever landed it, then queue the respawn.
           if (byTeam === myTeam) {
@@ -2073,6 +2138,9 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         }
       }
 
+      // ---- Death markers (pulse + fade) ----
+      updateDeathMarkers(dt, now);
+
       // ---- AI ----
       aiThink(dt, now);
 
@@ -2538,6 +2606,16 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
             g.arc(cx + s.pos.x * scale, cy + s.pos.z * scale, 3, 0, Math.PI * 2);
             g.fill();
           }
+          // Death markers: small fading dots where fighters fell.
+          for (const m of deathMarkers) {
+            const fade = Math.max(0, Math.min(1, (MARKER_LIFETIME - (now - m.created)) / MARKER_FADE_MS));
+            g.fillStyle = m.self ? '#fbbf24' : m.team === myTeam ? '#34d399' : '#f43f5e';
+            g.globalAlpha = 0.25 + 0.55 * fade;
+            g.beginPath();
+            g.arc(cx + m.pos.x * scale, cy + m.pos.z * scale, 2.2, 0, Math.PI * 2);
+            g.fill();
+          }
+          g.globalAlpha = 1;
           g.save();
           g.translate(cx + p.pos.x * scale, cy + p.pos.z * scale);
           g.rotate(-p.yaw);
