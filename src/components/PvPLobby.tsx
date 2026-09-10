@@ -5,6 +5,7 @@ import { sound } from '../audio/soundEngine';
 import { MapId } from '../game3d/types3d';
 import { MAP_CATALOG } from '../game3d/mapRegistry';
 import { config } from '../config';
+import { rankForTrophies } from '../data/ranks';
 import { GameMode, MatchInfo, MatchmakingClient } from '../services/matchmaking';
 
 interface PvPLobbyProps {
@@ -214,7 +215,7 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
             <div>
               <p className="text-[9px] font-black uppercase tracking-[.3em] text-cyan-300/90">Command Deck</p>
               <h1 className="mt-0.5 text-xl font-black text-white leading-tight">{user.firstName}</h1>
-              <p className="mt-0.5 text-[11px] text-slate-400">🏆 {user.trophies || 0} كأس {user.isVip ? <span className="text-amber-300">· VIP</span> : ''}</p>
+              <p className="mt-0.5 text-[11px] text-slate-400">{rankForTrophies(user.trophies).icon} {rankForTrophies(user.trophies).nameAr} · 🏆 {user.trophies || 0} كأس {user.isVip ? <span className="text-amber-300">· VIP</span> : ''}</p>
             </div>
           </div>
           <button onClick={() => { sound.playClick(); onOpenLoadout(); }}

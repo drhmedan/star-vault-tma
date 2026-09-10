@@ -205,9 +205,19 @@ app.post('/ledger/settle', (req, res) => {
     const settlement = ledger.settle({
       matchId: b.matchId, playerId: b.playerId, escrowId: b.escrowId,
       won: b.won, kills: b.kills, damage: b.damage, accuracy: b.accuracy,
-      durationSec: b.durationSec, mode: b.mode
+      durationSec: b.durationSec, mode: b.mode, name: b.name
     });
     res.json(settlement);
+  } catch (err) {
+    ledgerErrorResponse(res, err);
+  }
+});
+
+// Global leaderboard — top players by trophies (competitive rating).
+app.get('/ledger/leaderboard', (req, res) => {
+  const limit = Number(req.query.limit) || 50;
+  try {
+    res.json({ players: ledger.leaderboard(limit) });
   } catch (err) {
     ledgerErrorResponse(res, err);
   }

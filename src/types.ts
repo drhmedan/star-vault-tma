@@ -74,6 +74,27 @@ export interface UserProfile {
   };
   /** ISO date (YYYY-MM-DD) of the last VIP daily-star claim. */
   lastVipClaim?: string;
+  /** Lifetime XP — drives the player's level. */
+  careerXp?: number;
+  /** Daily quests state (resets when `date` rolls over). */
+  dailyQuests?: {
+    date: string;
+    progress: Record<string, number>;
+    claimed: string[];
+  };
+  /** Career stats + claimed achievements (permanent milestones). */
+  achievements?: {
+    stats: {
+      kills: number;
+      wins: number;
+      matches: number;
+      damage: number;
+      headshots: number;
+      stakes: number;
+      bestTrophies: number;
+    };
+    claimed: string[];
+  };
 }
 
 export interface BattleRoom {

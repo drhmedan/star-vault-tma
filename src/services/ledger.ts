@@ -65,8 +65,22 @@ export interface MatchCompletion {
   matchId: string;
   /** Experience earned — feeds the seasonal battle pass. */
   xp: number;
+  /** Headshots landed — feeds daily quests and achievements. */
+  headshots: number;
   /** Vault item id dropped on victory (soft-currency loot). */
   victoryDropItemId?: string;
+}
+
+/** One row of the server-side leaderboard. */
+export interface LeaderboardEntry {
+  id: number;
+  name: string;
+  trophies: number;
+  wins: number;
+  matches: number;
+  xp: number;
+  /** 1-based position in the full ranking. */
+  rank: number;
 }
 
 /** The deltas actually applied for a match — returned to the arena so its
@@ -128,7 +142,7 @@ export const ledger = {
     return post<EscrowReceipt>('/ledger/stake', { playerId, amount, roomCode });
   },
 
-  settle(result: MatchCompletion & { playerId: number; escrowId?: string }): Promise<Settlement> {
+  settle(result: MatchCompletion & { playerId: number; escrowId?: string; name?: string }): Promise<Settlement> {
     return post<Settlement>('/ledger/settle', {
       matchId: result.matchId,
       playerId: result.playerId,
@@ -138,7 +152,8 @@ export const ledger = {
       damage: result.damage,
       accuracy: result.accuracy,
       durationSec: result.durationSec,
-      mode: result.mode
+      mode: result.mode,
+      name: result.name
     });
   },
 
@@ -156,5 +171,16 @@ export const ledger = {
 
   grant(grantId: string, playerId: number, stars: number, vip = false): Promise<GrantReceipt> {
     return post<GrantReceipt>('/ledger/grant', { grantId, playerId, stars, vip });
+  },
+
+  leaderboard(limit = 50): Promise<LeaderboardEntry[]> {
+    const url = `${config.gameServer}/ledger/leaderboard?limit=${Math.max(1, Math.min(100, limit))}`;
+    return fetch(url, { headers: { Accept: 'application/json' } })
+      .then((res) => {
+        if (!res.ok) throw new LedgerError('network', 'تعذر تحميل لوحة الصدارة');
+        return res.json() as Promise<{ players: LeaderboardEntry[] }>;
+      })
+      .then((data) => data.players ?? [])
+      .catch(() => []); // offline / unreachable -> empty board, never a crash
   }
 };

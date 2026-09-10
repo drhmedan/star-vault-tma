@@ -84,7 +84,7 @@ export function createLedger(options = {}) {
   function player(id) {
     let p = balances.get(id);
     if (!p) {
-      p = { stars: cfg.initialStars, trophies: 0, dust: 0, xp: 0, matches: 0, wins: 0, vip: false };
+      p = { stars: cfg.initialStars, trophies: 0, dust: 0, xp: 0, matches: 0, wins: 0, vip: false, name: '' };
       balances.set(id, p);
     }
     return p;
@@ -154,8 +154,9 @@ export function createLedger(options = {}) {
         player(e.playerId).stars += e.amount;
       } else if (e.type === 'settle') {
         const p = player(e.playerId);
+        if (e.name) p.name = String(e.name).slice(0, 32);
         p.stars += e.rewards.stars;
-        p.trophies += e.rewards.trophies;
+        p.trophies = Math.max(0, p.trophies + e.rewards.trophies);
         p.dust += e.rewards.dust;
         p.xp += e.rewards.xp;
         p.matches += 1;
@@ -251,7 +252,7 @@ export function createLedger(options = {}) {
     return { escrowId, balance: p.stars, amount: amt };
   }
 
-  function settle({ matchId, playerId, escrowId, won, kills, damage, accuracy, durationSec, mode }) {
+  function settle({ matchId, playerId, escrowId, won, kills, damage, accuracy, durationSec, mode, name }) {
     if (typeof matchId !== 'string' || matchId.length < 6 || matchId.length > 96) {
       throw ledgerError('invalid', 'معرّف مباراة غير صالح');
     }
@@ -282,8 +283,9 @@ export function createLedger(options = {}) {
     if (rewards.stars > room) rewards.stars = room;
 
     const p = player(playerId);
+    if (typeof name === 'string' && name.trim()) p.name = name.trim().slice(0, 32);
     p.stars += rewards.stars;
-    p.trophies += rewards.trophies;
+    p.trophies = Math.max(0, p.trophies + rewards.trophies);
     p.dust += rewards.dust;
     p.xp += rewards.xp;
     p.matches += 1;
@@ -292,7 +294,7 @@ export function createLedger(options = {}) {
 
     persist({
       type: 'settle', matchId, playerId, escrowId: escrowId || null, roomCode: stakeRoom,
-      won: isWin, kills: k, damage: dmg, accuracy: acc, durationSec: dur, mode, stake,
+      won: isWin, kills: k, damage: dmg, accuracy: acc, durationSec: dur, mode, stake, name: p.name,
       rewards, balance: p.stars, ts: Date.now()
     });
 
@@ -397,9 +399,22 @@ export function createLedger(options = {}) {
     const p = player(playerId);
     const open = Array.from(escrows.values()).filter((e) => e.playerId === playerId);
     return {
-      id: playerId, stars: p.stars, trophies: p.trophies, dust: p.dust, xp: p.xp,
+      id: playerId, name: p.name, stars: p.stars, trophies: p.trophies, dust: p.dust, xp: p.xp,
       matches: p.matches, wins: p.wins, vip: p.vip, openEscrows: open.length
     };
+  }
+
+  // Ranked by trophies (the competitive rating). Only players who have ever
+  // played a match appear — the board is real, never seeded.
+  function leaderboard(limit) {
+    const n = clampInt(limit, 1, 100, 50);
+    const rows = Array.from(balances.entries())
+      .filter(([, p]) => p.matches > 0)
+      .map(([id, p]) => ({ id, name: p.name || 'لاعب مجهول', trophies: p.trophies, wins: p.wins, matches: p.matches, xp: p.xp }))
+      .sort((a, b) => b.trophies - a.trophies || b.wins - a.wins || b.matches - a.matches)
+      .slice(0, n)
+      .map((row, i) => ({ ...row, rank: i + 1 }));
+    return rows;
   }
 
   function stats() {
@@ -407,5 +422,5 @@ export function createLedger(options = {}) {
   }
 
   load();
-  return { stake, settle, cancelEscrow, purchase, topup, grant, playerView, stats, computeRewards };
+  return { stake, settle, cancelEscrow, purchase, topup, grant, playerView, leaderboard, stats, computeRewards };
 }

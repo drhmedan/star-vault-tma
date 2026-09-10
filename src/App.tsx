@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Package, Star, Swords, Disc, Users, ShoppingBag, 
-  Sparkles, CheckCircle, Volume2, VolumeX, Backpack, Shield, Crosshair, Crown
+  Sparkles, CheckCircle, Volume2, VolumeX, Backpack, Shield, Crosshair, Crown, Trophy
 } from 'lucide-react';
 import { UserProfile, VaultCase, VaultItem, WheelSegment } from './types';
 import { VAULT_CASES, ALL_ITEMS } from './data/vaultsData';
@@ -19,15 +19,17 @@ import { CommanderLoadout } from './components/CommanderLoadout';
 import { BattlePass } from './components/BattlePass';
 import { SkinsPanel } from './components/SkinsPanel';
 import { VipPanel } from './components/VipPanel';
+import { MissionsHub } from './components/MissionsHub';
 import { MapId } from './game3d/types3d';
 import { GameMode, MatchInfo } from './services/matchmaking';
 import { config } from './config';
 import { ledger, LedgerError, MatchCompletion, SettleOutcome } from './services/ledger';
 import { BATTLE_PASS, normalizeBattlePass } from './data/battlePass';
+import { questDateKey } from './data/dailyQuests';
 import { DEFAULT_WEAPON_SKIN_ID, DEFAULT_SOLDIER_SKIN_ID } from './data/skins';
 import { sound } from './audio/soundEngine';
 
-type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals' | 'battlepass';
+type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals' | 'battlepass' | 'missions';
 
 export const App: React.FC = () => {
   const [tab, setTab] = useState<TabType>('cyberwar');
@@ -50,9 +52,14 @@ export const App: React.FC = () => {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
+        const careerXp = typeof parsed.careerXp === 'number' && parsed.careerXp >= 0
+          ? parsed.careerXp
+          : ((parsed.level || 3) - 1) * 300 + 150;
         return {
           ...parsed,
           trophies: parsed.trophies || 120,
+          level: Math.min(99, 1 + Math.floor(careerXp / 300)),
+          careerXp,
           equippedLoadout: parsed.equippedLoadout || {
             weaponItemId: ALL_ITEMS.combat_knife.id,
             armorItemId: undefined
@@ -72,6 +79,7 @@ export const App: React.FC = () => {
       starDust: 350,
       keys: { cyber_silver: 1 },
       level: 3,
+      careerXp: 750,
       trophies: 120,
       isVip: false,
       inventory: [ALL_ITEMS.combat_knife, ALL_ITEMS.silver_bar, ALL_ITEMS.sovereign_blade],
@@ -283,8 +291,97 @@ export const App: React.FC = () => {
     });
   };
 
+  // Daily quests + career stats + level progression from every match.
+  const applyQuestProgress = (result: MatchCompletion) => {
+    const date = questDateKey(Date.now());
+    const wins = result.won && result.mode !== 'ai' ? 1 : 0;
+    const stakes = result.stake > 0 ? 1 : 0;
+    const xp = Math.max(0, Math.round(result.xp || 0));
+    setUser(p => {
+      const dq = p.dailyQuests && p.dailyQuests.date === date
+        ? p.dailyQuests : { date, progress: {} as Record<string, number>, claimed: [] as string[] };
+      const prog = { ...dq.progress };
+      const bump = (k: string, v: number) => { prog[k] = (prog[k] || 0) + v; };
+      bump('matches', 1);
+      bump('wins', wins);
+      bump('kills', result.kills);
+      bump('damage', result.damage);
+      bump('headshots', result.headshots || 0);
+      bump('stakes', stakes);
+
+      const stats = p.achievements?.stats ?? {
+        kills: 0, wins: 0, matches: 0, damage: 0, headshots: 0, stakes: 0,
+        bestTrophies: p.trophies || 0
+      };
+      const next = {
+        kills: stats.kills + result.kills,
+        wins: stats.wins + wins,
+        matches: stats.matches + 1,
+        damage: stats.damage + result.damage,
+        headshots: stats.headshots + (result.headshots || 0),
+        stakes: stats.stakes + stakes,
+        bestTrophies: Math.max(stats.bestTrophies || 0, p.trophies || 0)
+      };
+      const careerXp = (p.careerXp || 0) + xp;
+      return {
+        ...p,
+        careerXp,
+        level: Math.min(99, 1 + Math.floor(careerXp / 300)),
+        dailyQuests: { date, progress: prog, claimed: dq.claimed },
+        achievements: { stats: next, claimed: p.achievements?.claimed ?? [] }
+      };
+    });
+  };
+
+  // Claim a daily-quest reward: stars via the server ledger (idempotent,
+  // daily-capped grant) plus a soft dust bonus credited client-side.
+  const claimQuestReward = async (questId: string, rewardStars: number, rewardDust: number) => {
+    const date = questDateKey(Date.now());
+    if (user.dailyQuests?.claimed?.includes(questId)) return;
+    sound.playStarCoin();
+    const gid = `${user.id}:quest:${questId}:${date}`;
+    const markClaimed = (p: UserProfile) => {
+      const dq = p.dailyQuests ?? { date, progress: {}, claimed: [] };
+      return { ...p, starDust: p.starDust + rewardDust, dailyQuests: { ...dq, claimed: [...dq.claimed, questId] } };
+    };
+    if (ledger.available) {
+      try {
+        const g = await ledger.grant(gid, user.id, rewardStars);
+        setUser(p => ({ ...markClaimed(p), stars: g.balance }));
+      } catch {
+        // Grant rejected (cap/network): dust fallback, never mint stars.
+        setUser(p => ({ ...markClaimed(p), starDust: p.starDust + rewardDust + rewardStars * 10 }));
+      }
+    } else {
+      setUser(p => ({ ...markClaimed(p), stars: p.stars + rewardStars }));
+    }
+  };
+
+  // Claim an achievement: one-time stars grant + dust + optional vault item.
+  const claimAchievementReward = async (achId: string, rewardStars: number, rewardDust: number, itemId?: string) => {
+    if (user.achievements?.claimed?.includes(achId)) return;
+    sound.playStarCoin();
+    const gid = `${user.id}:ach:${achId}`;
+    const markClaimed = (p: UserProfile) => {
+      const ach = p.achievements ?? { stats: { kills: 0, wins: 0, matches: 0, damage: 0, headshots: 0, stakes: 0, bestTrophies: p.trophies || 0 }, claimed: [] };
+      const inventory = itemId && ALL_ITEMS[itemId] ? [{ ...ALL_ITEMS[itemId] }, ...p.inventory] : p.inventory;
+      return { ...p, inventory, starDust: p.starDust + rewardDust, achievements: { ...ach, claimed: [...ach.claimed, achId] } };
+    };
+    if (ledger.available) {
+      try {
+        const g = await ledger.grant(gid, user.id, rewardStars);
+        setUser(p => ({ ...markClaimed(p), stars: g.balance }));
+      } catch {
+        setUser(p => ({ ...markClaimed(p), starDust: p.starDust + rewardDust + rewardStars * 10 }));
+      }
+    } else {
+      setUser(p => ({ ...markClaimed(p), stars: p.stars + rewardStars }));
+    }
+  };
+
   const handleMatchComplete = async (result: MatchCompletion): Promise<SettleOutcome> => {
     creditBattlePassXp(Math.max(0, Math.round(result.xp || 0)));
+    applyQuestProgress(result);
     // Victory drop: add the looted vault item to the inventory (soft value).
     if (result.victoryDropItemId && ALL_ITEMS[result.victoryDropItemId]) {
       const drop = { ...ALL_ITEMS[result.victoryDropItemId] };
@@ -312,6 +409,7 @@ export const App: React.FC = () => {
       const s = await ledger.settle({
         ...result,
         playerId: user.id,
+        name: user.firstName,
         escrowId: result.stake > 0 && esc.verified ? esc.id : undefined
       });
       setUser(p => ({
@@ -459,6 +557,15 @@ export const App: React.FC = () => {
           />
         )}
 
+        {/* TAB 9: MISSIONS (daily quests · achievements · ranks · leaderboard) */}
+        {tab === 'missions' && (
+          <MissionsHub
+            user={user}
+            onClaimQuest={claimQuestReward}
+            onClaimAchievement={claimAchievementReward}
+          />
+        )}
+
         {/* TAB 7: REFERRAL */}
         {tab === 'referrals' && (
           <ReferralHub 
@@ -492,6 +599,7 @@ export const App: React.FC = () => {
         <nav className="fixed bottom-0 inset-x-0 max-w-lg mx-auto bg-slate-950/95 backdrop-blur-lg border-t border-slate-800/80 px-2 py-2 flex justify-around items-center z-40">
           {[
             { id: 'cyberwar', label: 'ساحة الحرب', icon: Swords },
+            { id: 'missions', label: 'المهام', icon: Trophy },
             { id: 'loadout', label: 'العتاد', icon: Shield },
             { id: 'vaults', label: 'الصناديق', icon: Package },
             { id: 'wheel', label: 'العجلة', icon: Disc },
@@ -515,8 +623,8 @@ export const App: React.FC = () => {
                   setTab(item.id as TabType);
                 }}
               >
-                <Icon size={18} className={isActive ? 'stroke-[2.5]' : 'stroke-2'} />
-                <span className="text-[10px] mt-0.5">{item.label}</span>
+                <Icon size={16} className={isActive ? 'stroke-[2.5]' : 'stroke-2'} />
+                <span className="text-[9px] mt-0.5 whitespace-nowrap">{item.label}</span>
               </button>
             );
           })}

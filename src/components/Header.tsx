@@ -1,6 +1,7 @@
 import React from 'react';
 import { Crown, Plus, Volume2, VolumeX } from 'lucide-react';
 import { UserProfile } from '../types';
+import { rankForTrophies } from '../data/ranks';
 import { sound } from '../audio/soundEngine';
 
 interface HeaderProps {
@@ -32,6 +33,7 @@ export const Header: React.FC<HeaderProps> = ({ user, onOpenShop, muted, onToggl
               <span className="px-1.5 py-0.5 rounded-md bg-amber-400/15 text-amber-300 font-mono font-black text-[9px] border border-amber-400/25">
                 LVL {user.level}
               </span>
+              <span title={rankForTrophies(user.trophies).nameAr} className="text-sm leading-none">{rankForTrophies(user.trophies).icon}</span>
             </div>
             <div className="text-[10px] text-slate-500 font-mono">@{user.username || 'telegram_user'}</div>
           </div>

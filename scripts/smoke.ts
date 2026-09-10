@@ -10,6 +10,9 @@ import { buildMapEnvironment, MAP_CATALOG } from '../src/game3d/mapRegistry';
 import { createSoldierMesh, createWeaponViewModel } from '../src/game3d/worldBuilder';
 import { sound } from '../src/audio/soundEngine';
 import type { WeaponType } from '../src/game3d/types3d';
+import { RANKS, rankForTrophies, nextRank, rankProgress } from '../src/data/ranks';
+import { DAILY_QUESTS, questsForDate, questDateKey } from '../src/data/dailyQuests';
+import { ACHIEVEMENTS, achievementValue, EMPTY_CAREER } from '../src/data/achievements';
 
 type MapId = 'warehouse' | 'desert' | 'warzone';
 
@@ -196,6 +199,36 @@ try {
   check(true, 'all sound methods callable without AudioContext (no throw)');
 } catch (err) {
   check(false, `sound methods threw: ${(err as Error).message}`);
+}
+
+console.log('\n━━━ Retention (ranks · daily quests · achievements) ━━━');
+// Ranks: strictly ascending thresholds, sane helpers at every boundary.
+{
+  check(RANKS.length >= 5, `ranks defined: ${RANKS.length} tiers`);
+  let ascending = true;
+  for (let i = 1; i < RANKS.length; i++) if (RANKS[i].min <= RANKS[i - 1].min) ascending = false;
+  check(ascending, 'rank thresholds strictly ascending');
+  check(rankForTrophies(0).id === RANKS[0].id, '0 trophies -> lowest rank');
+  check(rankForTrophies(99999).id === RANKS[RANKS.length - 1].id, 'huge trophies -> top rank');
+  check(nextRank(0) !== null && rankProgress(0) < 1, 'next-rank + progress defined at bottom');
+  check(nextRank(99999) === null && rankProgress(99999) === 1, 'top rank has no next tier (progress 1)');
+}
+// Daily quests: a deterministic 4-per-day rotation with valid rewards.
+{
+  check(DAILY_QUESTS.length >= 8, `quest pool: ${DAILY_QUESTS.length} templates`);
+  const d1 = questsForDate('2026-09-10');
+  const d2 = questsForDate('2026-09-10');
+  check(d1.length === 4 && d2.length === 4, 'rotation returns 4 quests per day');
+  check(d1.every((q, i) => q.id === d2[i].id), 'same day -> identical deterministic set');
+  const allValid = DAILY_QUESTS.every((q) => q.target > 0 && q.rewardStars > 0 && q.rewardDust >= 0 && q.nameAr.length > 0);
+  check(allValid, 'all quest templates have valid targets/rewards/names');
+  check(questDateKey(Date.now()).length === 10, 'questDateKey -> YYYY-MM-DD');
+}
+// Achievements: every def resolves against career stats without NaN.
+{
+  check(ACHIEVEMENTS.length >= 10, `achievements: ${ACHIEVEMENTS.length}`);
+  const ok = ACHIEVEMENTS.every((a) => Number.isFinite(achievementValue(a, EMPTY_CAREER)) && achievementValue(a, EMPTY_CAREER) >= 0);
+  check(ok, 'achievementValue finite/non-negative for empty stats');
 }
 
 console.log('\n━━━ Result ━━━');

@@ -641,6 +641,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       onMatchComplete({
         won, kills: p.kills, damage: Math.round(p.damageDealt), accuracy: acc,
         durationSec: Math.round(dur), mode, stake: stakeStars, matchId, xp,
+        headshots: p.headshots,
         victoryDropItemId: drop?.id
       })
         .then((final) => {
