@@ -7,6 +7,8 @@ import { MAP_CATALOG } from '../game3d/mapRegistry';
 import { config } from '../config';
 import { rankForTrophies } from '../data/ranks';
 import { GameMode, MatchInfo, MatchmakingClient } from '../services/matchmaking';
+import { parsePartyCode } from '../services/partyCode';
+import { copyText, partyInviteText, sharePartyInvite } from '../services/share';
 
 interface PvPLobbyProps {
   user: UserProfile;
@@ -53,11 +55,12 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
   // Private party codes self-describe the room rules: SV-{MODE}-{TEAM}-{ID}.
   const partyTagOf = (mode: GameMode) => (mode === '2v2' ? '2V2' : mode === 'tdm4v4' ? 'TDM' : 'FFA');
   const partyCodeFor = (mode: GameMode, team: 0 | 1) => `SV-${partyTagOf(mode)}-${team === 0 ? 'A' : 'B'}-${partyId}`;
-  const parsePartyCode = (raw: string): { mode: GameMode; hostTeam: 0 | 1 } | null => {
-    const m = raw.trim().toUpperCase().match(/^SV-(FFA|2V2|TDM)-([AB])-([A-Z0-9]{4,8})$/);
-    if (!m) return null;
-    const mode: GameMode = m[1] === '2V2' ? '2v2' : m[1] === 'TDM' ? 'tdm4v4' : 'ffa';
-    return { mode, hostTeam: m[2] === 'A' ? 0 : 1 };
+  const [shared, setShared] = useState(false);
+  const shareParty = () => {
+    sound.playClick();
+    const code = partyCodeFor(partyMode, partyTeam);
+    const okShare = sharePartyInvite(code, partyMode);
+    setShared(okShare || copyText(partyInviteText(code, partyMode)));
   };
   const startParty = () => {
     start('host', partyCodeFor(partyMode, partyTeam), stakeStars, undefined, partyMode, partyTeam);
@@ -447,6 +450,10 @@ export const PvPLobby: React.FC<PvPLobbyProps> = ({ user, onStartMatch, onOpenLo
             <span className="text-[10px] font-bold text-slate-400">رمز الغرفة</span>
             <span className="font-mono text-sm font-black tracking-[0.18em] text-amber-200" dir="ltr">{partyId ? partyCodeFor(partyMode, partyTeam) : '……'}</span>
           </div>
+          <button onClick={shareParty}
+            className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl border border-cyan-300/30 bg-cyan-400/10 py-2.5 text-xs font-black text-cyan-100 transition active:scale-[.98]">
+            <Share2 className="h-3.5 w-3.5" /> {shared ? 'تمت المشاركة — أرسلها لصديقك' : 'مشاركة رابط الدعوة'}
+          </button>
           <button onClick={startParty}
             className="mt-3 w-full rounded-xl bg-gradient-to-l from-amber-300 to-amber-400 py-3 text-xs font-black text-slate-950 shadow-[0_0_24px_rgba(251,191,36,.28)] transition active:scale-[.98]">
             إنشاء الغرفة ودخول المعركة

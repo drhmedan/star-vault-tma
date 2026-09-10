@@ -20,10 +20,14 @@ interface PeerSignalConfig {
 const raw = (import.meta.env.VITE_GAME_SERVER as string | undefined) ?? '';
 const GAME_SERVER = raw.replace(/\/+$/, '');
 
+const BOT_USERNAME = ((import.meta.env.VITE_BOT_USERNAME as string | undefined) ?? '').replace(/^@/, '').trim();
+
 export const config = {
   gameServer: GAME_SERVER,
   /** True when a live backend is configured; otherwise the app runs offline. */
   matchmakerAvailable: GAME_SERVER !== '',
+  /** The bot's username (without @) — enables one-tap deep-link invites. */
+  botUsername: BOT_USERNAME,
   /** WebSocket endpoint of the matchmaking queue. */
   matchmakerUrl: GAME_SERVER !== '' ? GAME_SERVER.replace(/^http/, 'ws') + '/match' : '',
   /** Self-hosted PeerJS signaling; null falls back to the PeerJS cloud. */

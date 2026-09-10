@@ -11,6 +11,7 @@ interface TelegramWebAppLike {
   initData?: string;
   initDataUnsafe?: { user?: { id?: number; first_name?: string; last_name?: string; username?: string } };
   openInvoice?: (url: string, callback?: (status: 'paid' | 'cancelled' | 'failed' | 'pending') => void) => void;
+  openTelegramLink?: (url: string) => void;
 }
 
 function telegramWebApp(): TelegramWebAppLike | undefined {

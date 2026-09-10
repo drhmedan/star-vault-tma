@@ -22,6 +22,7 @@ import { VipPanel } from './components/VipPanel';
 import { MissionsHub } from './components/MissionsHub';
 import { MapId } from './game3d/types3d';
 import { GameMode, MatchInfo } from './services/matchmaking';
+import { parsePartyCode, joinerTeam } from './services/partyCode';
 import { config } from './config';
 import { ledger, LedgerError, MatchCompletion, SettleOutcome } from './services/ledger';
 import { BATTLE_PASS, normalizeBattlePass } from './data/battlePass';
@@ -125,14 +126,18 @@ export const App: React.FC = () => {
         }));
       }
 
-      // Check deep link start parameter (e.g. ?startapp=pvp_CYBER-XYZ)
+      // Deep link invite (e.g. ?startapp=pvp_SV-2V2-A-X8K2Q): the code carries
+      // the room rules, so the joiner enters the right mode on the opposite
+      // squad without any extra handshake.
       const startParam = tg.initDataUnsafe?.start_param || '';
       if (startParam.startsWith('pvp_')) {
         const roomToJoin = startParam.replace('pvp_', '');
+        const party = parsePartyCode(roomToJoin);
         setActiveMatch({
-          roomCode: roomToJoin,
+          roomCode: roomToJoin.toUpperCase(),
           mode: 'join',
-          stakeStars: 0
+          stakeStars: 0,
+          ...(party ? { gameMode: party.mode, partyTeam: joinerTeam(party.hostTeam) } : {})
         });
         setTab('cyberwar');
       }

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Heart, RefreshCw, RotateCw, Shield } from 'lucide-react';
+import { ArrowLeft, Heart, RefreshCw, RotateCw, Share2, Shield } from 'lucide-react';
 import { UserProfile, VaultItem } from '../types';
 import { rollVictoryDrop } from '../data/victoryDrops';
 import { buildMapEnvironment, MAP_CATALOG } from '../game3d/mapRegistry';
@@ -15,6 +15,7 @@ import { multiplayer, ConnectionStatus } from '../services/multiplayer';
 import { GameMode, MatchInfo } from '../services/matchmaking';
 import { MatchCompletion, SettleOutcome } from '../services/ledger';
 import { config } from '../config';
+import { sharePartyInvite, copyText, partyInviteText } from '../services/share';
 import { soldierSkinById, weaponSkinById, DEFAULT_WEAPON_SKIN_ID, DEFAULT_SOLDIER_SKIN_ID, WeaponSkin } from '../data/skins';
 import { sound } from '../audio/soundEngine';
 import { tgHaptics } from '../services/telegramHaptics';
@@ -2906,6 +2907,19 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
               <div className="flex items-center gap-1 px-2 py-1 rounded-full border border-amber-300/25 bg-black/25 backdrop-blur-sm" dir="ltr">
                 <span className="text-[9px] font-mono font-black tracking-wider text-amber-200">{roomCode}</span>
               </div>
+            )}
+            {mode === 'host' && connStatus !== 'connected' && (
+              <button
+                onClick={() => {
+                  sound.playClick();
+                  const shareMode = gameMode ?? 'ffa';
+                  const okShare = sharePartyInvite(roomCode, shareMode);
+                  if (!okShare) copyText(partyInviteText(roomCode, shareMode));
+                }}
+                aria-label="مشاركة الدعوة"
+                className="w-8 h-8 flex items-center justify-center rounded-full border border-cyan-300/25 bg-black/25 text-cyan-200 backdrop-blur-sm active:scale-90 transition-transform">
+                <Share2 className="w-3.5 h-3.5" />
+              </button>
             )}
             <div className="flex items-center gap-1 px-2 py-1 rounded-full border border-red-400/25 bg-black/25 backdrop-blur-sm">
               <span className="text-[10px] leading-none">💀</span>

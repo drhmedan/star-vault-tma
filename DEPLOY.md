@@ -42,6 +42,7 @@
 | المتغير | القيمة |
 |---|---|
 | `VITE_GAME_SERVER` | `https://<خدمتك>.koyeb.app` |
+| `VITE_BOT_USERNAME` | اسم البوت (بدون @) — يفعّل روابط الدعوة المباشرة |
 
 4. **Deploy** → احصل على رابط `https://<مشروعك>.vercel.app` وضعه في زر القائمة في BotFather.
 
