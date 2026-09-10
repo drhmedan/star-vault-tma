@@ -14,6 +14,7 @@ import { multiplayer, ConnectionStatus } from '../services/multiplayer';
 import { MatchInfo } from '../services/matchmaking';
 import { MatchCompletion, SettleOutcome } from '../services/ledger';
 import { config } from '../config';
+import { soldierSkinById, weaponSkinById, DEFAULT_WEAPON_SKIN_ID, DEFAULT_SOLDIER_SKIN_ID, WeaponSkin } from '../data/skins';
 import { sound } from '../audio/soundEngine';
 import { tgHaptics } from '../services/telegramHaptics';
 
@@ -363,7 +364,18 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     const camera = new THREE.PerspectiveCamera(75, width / height, 0.08, 600);
     camera.rotation.order = 'YXZ';
 
+    // Equipped skins (procedural recolours) — the player's operator and
+    // weapons carry them in both first and third person.
+    const equippedWeaponSkin = weaponSkinById(user.equippedSkins?.weapon);
+    const equippedSoldierSkin = soldierSkinById(user.equippedSkins?.soldier);
+
     const playerSoldier = createSoldierMesh(false);
+    if (equippedSoldierSkin && equippedSoldierSkin.id !== DEFAULT_SOLDIER_SKIN_ID) {
+      playerSoldier.setPalette(equippedSoldierSkin.colors);
+    }
+    if (equippedWeaponSkin && equippedWeaponSkin.id !== DEFAULT_WEAPON_SKIN_ID) {
+      playerSoldier.setWeaponSkin(equippedWeaponSkin.colors);
+    }
     scene.add(playerSoldier.root);
 
     // ---- Enemy roster ----------------------------------------------------
@@ -430,7 +442,10 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
     }
     const hasHumanOpponent = enemyUnits.some((u) => u.state.isHuman);
 
-    let viewmodel: WeaponViewModel | null = createWeaponViewModel(WEAPONS.ak47.type);
+    const weaponSkinColors = equippedWeaponSkin && equippedWeaponSkin.id !== DEFAULT_WEAPON_SKIN_ID
+      ? equippedWeaponSkin.colors : undefined;
+
+    let viewmodel: WeaponViewModel | null = createWeaponViewModel(WEAPONS.ak47.type, weaponSkinColors);
     viewmodel.group.visible = false;
     camera.add(viewmodel.group);
     scene.add(camera);
@@ -880,7 +895,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
         }
 
         const hit = traceShot(origin, dir, w.def.range, 'player');
-        const line = acquireTracer(w.def.tracerColor);
+        const line = acquireTracer((equippedWeaponSkin as WeaponSkin | undefined)?.tracerColor ?? w.def.tracerColor);
         line.geometry.setFromPoints([muzzlePos.clone(), hit.point.clone()]);
         activeTracers.push({ line, ttl: 0.07 });
 
@@ -953,7 +968,7 @@ export const Pubg3DArena: React.FC<Pubg3DArenaProps> = ({
       if (viewmodel) {
         camera.remove(viewmodel.group);
         disposeViewModel(viewmodel);
-        viewmodel = createWeaponViewModel(w.def.type);
+        viewmodel = createWeaponViewModel(w.def.type, weaponSkinColors);
         viewmodel.group.visible = viewModeRef.current === 'fpp';
         camera.add(viewmodel.group);
       }

@@ -65,6 +65,13 @@ export interface UserProfile {
     claimedFree: number[];
     claimedPremium: number[];
   };
+  /** Skin ids the player owns (defaults are always owned). */
+  ownedSkins?: string[];
+  /** Equipped skins: soldier appearance + weapon paint. */
+  equippedSkins?: {
+    soldier?: string;
+    weapon?: string;
+  };
 }
 
 export interface BattleRoom {

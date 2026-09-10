@@ -130,6 +130,10 @@ for (const enemy of [false, true]) {
   check(!!s.rig.leftLeg && !!s.rig.rightLeg && !!s.rig.leftArm && !!s.rig.rightArm, 'rig limbs present');
   check(!!s.hitHead && !!s.hitBody && s.hitLimbs.length === 4, 'hit zones (head/body/4 limbs) present');
   check(typeof s.setSkin === 'function' && typeof s.setMuzzleFlash === 'function', 'setSkin / setMuzzleFlash hooks present');
+  check(typeof s.setPalette === 'function' && typeof s.setWeaponSkin === 'function', 'setPalette / setWeaponSkin hooks present');
+  // Procedural skins must apply without throwing (palette + weapon re-tint).
+  s.setPalette({ fabric: 0x2a323c, fabricDark: 0x1e242c, vest: 0x232a33, accent: 0x93c5fd, webbing: 0x475569 });
+  s.setWeaponSkin({ poly: 0x150a1f, metal: 0x1a1226, accent: 0x8b5cf6, wood: 0x241238, tube: 0x6d28d9 });
   const tris = countTriangles(s.root);
   console.log(`   ${enemy ? 'enemy' : 'player'} soldier triangles: ${tris}`);
   check(tris < 15_000, 'soldier triangle budget <15k');
@@ -143,6 +147,14 @@ for (const wt of weaponTypes) {
   const tris = countTriangles(vm.group);
   console.log(`   ${wt} viewmodel triangles: ${tris}`);
   check(tris < 8000, `viewmodel ${wt} triangle budget <8k`);
+}
+
+console.log('\n━━━ Skins (procedural re-tint) ━━━');
+{
+  const skinned = createWeaponViewModel('ak47', { poly: 0x2a0a0d, metal: 0x1a0d0f, accent: 0xdc2626, wood: 0x3d1518, tube: 0x7f1d1d });
+  const tris = countTriangles(skinned.group);
+  check(tris > 0, 'skinned viewmodel renders geometry');
+  check(tris < 8000, 'skinned viewmodel triangle budget <8k');
 }
 
 console.log('\n━━━ Runtime budget estimate (warzone + 2 soldiers + viewmodel) ━━━');

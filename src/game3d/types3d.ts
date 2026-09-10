@@ -167,6 +167,28 @@ export interface SoldierMesh {
   // Swaps the held weapon mesh to match the equipped gun (keeps the same
   // material instances, so draw calls stay constant).
   setWeapon: (type: WeaponType) => void;
+  // Re-tints the operator's fabric/vest/accent palette (equipped skin).
+  setPalette: (palette: SoldierPalette) => void;
+  // Re-tints the held (third-person) weapon materials.
+  setWeaponSkin: (colors: WeaponSkinColors) => void;
+}
+
+/** Weapon material palette used by procedural skins. */
+export interface WeaponSkinColors {
+  poly: number;
+  metal: number;
+  accent: number;
+  wood: number;
+  tube: number;
+}
+
+/** Soldier fabric/vest/accent palette used by procedural skins. */
+export interface SoldierPalette {
+  fabric: number;
+  fabricDark: number;
+  vest: number;
+  accent: number;
+  webbing: number;
 }
 
 // ============================================================

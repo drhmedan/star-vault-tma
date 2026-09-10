@@ -17,11 +17,13 @@ import { PvPLobby } from './components/PvPLobby';
 import { Pubg3DArena } from './components/Pubg3DArena';
 import { CommanderLoadout } from './components/CommanderLoadout';
 import { BattlePass } from './components/BattlePass';
+import { SkinsPanel } from './components/SkinsPanel';
 import { MapId } from './game3d/types3d';
 import { MatchInfo } from './services/matchmaking';
 import { config } from './config';
 import { ledger, LedgerError, MatchCompletion, SettleOutcome } from './services/ledger';
 import { BATTLE_PASS, normalizeBattlePass } from './data/battlePass';
+import { DEFAULT_WEAPON_SKIN_ID, DEFAULT_SOLDIER_SKIN_ID } from './data/skins';
 import { sound } from './audio/soundEngine';
 
 type TabType = 'cyberwar' | 'loadout' | 'vaults' | 'wheel' | 'shop' | 'inventory' | 'referrals' | 'battlepass';
@@ -52,7 +54,9 @@ export const App: React.FC = () => {
           equippedLoadout: parsed.equippedLoadout || {
             weaponItemId: ALL_ITEMS.combat_knife.id,
             armorItemId: undefined
-          }
+          },
+          ownedSkins: parsed.ownedSkins?.length ? parsed.ownedSkins : [DEFAULT_WEAPON_SKIN_ID, DEFAULT_SOLDIER_SKIN_ID],
+          equippedSkins: parsed.equippedSkins || { soldier: DEFAULT_SOLDIER_SKIN_ID, weapon: DEFAULT_WEAPON_SKIN_ID }
         };
       } catch (e) {}
     }
@@ -72,6 +76,8 @@ export const App: React.FC = () => {
       equippedLoadout: {
         weaponItemId: ALL_ITEMS.combat_knife.id
       },
+      ownedSkins: [DEFAULT_WEAPON_SKIN_ID, DEFAULT_SOLDIER_SKIN_ID],
+      equippedSkins: { soldier: DEFAULT_SOLDIER_SKIN_ID, weapon: DEFAULT_WEAPON_SKIN_ID },
       lastDailySpin: 0,
       lastFreeCase: 0,
       refCode: 'REF' + Math.floor(1000 + Math.random() * 9000),
@@ -350,11 +356,20 @@ export const App: React.FC = () => {
 
         {/* TAB 2: COMMANDER LOADOUT */}
         {tab === 'loadout' && (
-          <CommanderLoadout 
-            user={user}
-            onUpdateLoadout={(loadout) => setUser(p => ({ ...p, equippedLoadout: loadout }))}
-            onBack={() => setTab('cyberwar')}
-          />
+          <>
+            <CommanderLoadout 
+              user={user}
+              onUpdateLoadout={(loadout) => setUser(p => ({ ...p, equippedLoadout: loadout }))}
+              onBack={() => setTab('cyberwar')}
+            />
+            <div className="mt-5">
+              <SkinsPanel
+                user={user}
+                onUserChange={setUser}
+                onOpenShop={() => setTab('shop')}
+              />
+            </div>
+          </>
         )}
 
         {/* TAB 3: VAULTS & CASES */}

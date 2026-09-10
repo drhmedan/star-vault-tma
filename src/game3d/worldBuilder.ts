@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { SoldierMesh, SoldierRig, WeaponType } from './types3d';
+import { SoldierMesh, SoldierRig, WeaponType, SoldierPalette, WeaponSkinColors } from './types3d';
 
 // ============================================================
 // Procedural tactical operator + first-person weapon viewmodels.
@@ -470,10 +470,36 @@ export function createSoldierMesh(isEnemy: boolean = false): SoldierMesh {
 
   const rig: SoldierRig = { leftLeg: legL, rightLeg: legR, leftArm: armL, rightArm: armR, recoil };
 
+  // Re-tint the operator palette to the equipped skin. The readability
+  // emissive (a faint self-glow so soldiers read against terrain) is
+  // recomputed from the new fabric/vest colours.
+  const tint = (c: number, f: number) => new THREE.Color(c).multiplyScalar(f);
+  const setPalette = (p: SoldierPalette) => {
+    fabric.color.set(p.fabric);
+    fabricDark.color.set(p.fabricDark);
+    vest.color.set(p.vest);
+    accentMat.color.set(p.accent);
+    accentDark.color.copy(tint(p.accent, 0.62));
+    webbing.color.set(p.webbing);
+    fabric.emissive.copy(tint(p.fabric, 0.1));
+    fabric.emissiveIntensity = 0.3;
+    vest.emissive.copy(tint(p.vest, 0.1));
+    vest.emissiveIntensity = 0.25;
+    accentMat.emissive.set(p.accent);
+  };
+
+  const setWeaponSkin = (colors: WeaponSkinColors) => {
+    gunMats.poly.color.set(colors.poly);
+    gunMats.metal.color.set(colors.metal);
+    gunMats.accent.color.set(colors.accent);
+    gunMats.wood.color.set(colors.wood);
+    gunMats.tube.color.set(colors.tube);
+  };
+
   return {
     root, torso, head, gun, muzzle, muzzleLight, rig,
     hitHead, hitBody, hitLimbs, accentColor: accent,
-    setSkin, flashHit, setMuzzleFlash, setWeapon
+    setSkin, setPalette, setWeaponSkin, flashHit, setMuzzleFlash, setWeapon
   };
 }
 
@@ -736,7 +762,7 @@ export interface WeaponViewModel {
   muzzleLight: THREE.PointLight;
 }
 
-export function createWeaponViewModel(type: WeaponType): WeaponViewModel {
+export function createWeaponViewModel(type: WeaponType, skin?: WeaponSkinColors): WeaponViewModel {
   const group = new THREE.Group();
 
   const gunMats: GunMats = {
@@ -748,6 +774,16 @@ export function createWeaponViewModel(type: WeaponType): WeaponViewModel {
     tube: new THREE.MeshStandardMaterial({ color: 0x4a5a3a, roughness: 0.5, metalness: 0.4 }),
     head: new THREE.MeshStandardMaterial({ color: 0x9a3412, roughness: 0.4, metalness: 0.5 })
   };
+
+  // Equipped weapon skin re-tints the shared material set before the rig is
+  // merged, so the whole viewmodel carries the skin at no extra draw cost.
+  if (skin) {
+    gunMats.poly.color.set(skin.poly);
+    gunMats.metal.color.set(skin.metal);
+    gunMats.accent.color.set(skin.accent);
+    gunMats.wood.color.set(skin.wood);
+    gunMats.tube.color.set(skin.tube);
+  }
 
   const rig = buildGunRig(type, gunMats);
 
