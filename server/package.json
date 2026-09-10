@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Star Vault — matchmaking + WebRTC signaling server (Koyeb free tier)",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node index.mjs",
     "migrate": "node migrate.mjs"

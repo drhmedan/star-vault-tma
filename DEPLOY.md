@@ -1,47 +1,48 @@
 # دليل الإطلاق — Star Vault TMA
 
-دليل خطوة بخطوة لنشر اللعبة للاعبين حقيقيين على الطبقة المجانية (Vercel + Koyeb + TiDB Starter). راجع `server/README.md` و`ARCHITECTURE.md` للتفاصيل التقنية.
+دليل خطوة بخطوة لنشر اللعبة للاعبين حقيقيين على الطبقة المجانية (Vercel + Render + TiDB Starter). راجع `server/README.md` و`ARCHITECTURE.md` للتفاصيل التقنية.
 
-> **البنية:** الواجهة على **Vercel** (مجاني)، الخادم (مطابقة + إشارات WebRTC + دفتر الحسابات + ويب هوك الدفع) على **Koyeb** (مجاني، دائم التشغيل)، وقاعدة **TiDB Serverless** (مجاني) لاحقاً. حركة اللعب نفسها P2P بين الهواتف ولا تمر عبر الخادم.
+> **البنية:** الواجهة على **Vercel** (مجاني)، الخادم (مطابقة + إشارات WebRTC + دفتر الحسابات + ويب هوك الدفع) على **Render** (مجاني، بدون بطاقة)، وقاعدة **TiDB Serverless** (مجاني). حركة اللعب نفسها P2P بين الهواتف ولا تمر عبر الخادم.
+>
+> **ملاحظة مهمة عن Render المجاني:** الخدمة **تنام بعد 15 دقيقة خمول** وتصحى في 30–60 ثانية عند أول طلب. حل مجاني: خدمة **UptimeRobot** (uptimerobot.com) تبعت ping لـ `https://اسمك.onrender.com/health` كل 5 دقائق فيبقى الخادم صاحي دائمًا.
 
 ---
 
 ## 0) بوت تيليجرام (BotFather)
 
-1. في **@BotFather**: `/newbot` → احفظ **`BOT_TOKEN`** (يذهب إلى Koyeb، لا يدخل الواجهة أبداً).
+1. في **@BotFather**: `/newbot` → احفظ **`BOT_TOKEN`** (يذهب إلى Render، لا يدخل الواجهة أبداً).
 2. `/mybots` → **Bot Settings → Menu Button** → *Open Web App* → ضع رابط Vercel (الخطوة 2).
 3. `/mybots` → **Payments** → فعّل **Telegram Stars** (العملة `XTR`).
 4. أضف وصفاً قصيراً وأيقونة 64×64 بالعربية.
 5. روابط الدعوة: `t.me/<bot>?startapp=pvp_<رمز-الغرفة>` — العميل يقرأ `start_param` ويلتحق تلقائياً (منفّذ).
 
-## 1) الخادم — Koyeb (مجاني)
+## 1) الخادم — Render (مجاني، بدون بطاقة)
 
-1. **Create Service** → *Dockerfile* → مجلد **`server/`**.
-2. المنطقة `Frankfurt`، الحجم المجاني (512MB / 0.1 vCPU، دائم التشغيل).
-3. المنفذ المكشوف: **`8000`**.
-4. متغيّرات البيئة:
-
-| المتغير | القيمة | ملاحظة |
-|---|---|---|
-| `PORT` | `8000` | |
-| `BOT_TOKEN` | من BotFather | **بدونه** يعمل الدفتر بلا تحقق هوية (وضع تطوير) |
-| `WEBHOOK_URL` | `https://<خدمتك>.koyeb.app/webhook` | يُسجَّل تلقائياً عند الإقلاع |
-| `WEBHOOK_SECRET` | سلسلة عشوائية | مصادقة تحديثات الدفع |
-| `CORS_ORIGIN` | `*` | الواجهة تستدعي الخادم من أصل آخر |
-| `ALLOW_CLIENT_TOPUP` | `0` | يجب أن يبقى 0 في الإنتاج |
-| `LEDGER_FILE` | `data/ledger.jsonl` | دفتر الحسابات على قرص الحاوية |
-
-5. انشر واحفظ رابط الخدمة (`https://<خدمتك>.koyeb.app`).
-
-## 2) الواجهة — Vercel (مجاني)
-
-1. **Import Git Repository** → المستودع `drhmedan/star-vault-tma`.
-2. الإعدادات التلقائية تكفي (Vite — `vercel.json` مضبوط مسبقاً).
-3. متغيّر البيئة الوحيد المطلوب:
+1. ادخل **render.com** → **Sign in with GitHub** (بحساب GitHub الخاص بالمشروع).
+2. **New → Blueprint** → اختار الريبو (فيه `render.yaml` جاهز) → **Apply**.
+   - أو يدوياً: **New → Web Service** → الريبو → Root Directory = `server` → Build: `npm install` → Start: `npm start`.
+3. المتغيرات العلنية مضبوطة تلقائياً من `render.yaml` (`CORS_ORIGIN=*`, `ALLOW_CLIENT_TOPUP=0`, `LEDGER_FILE=data/ledger.jsonl`).
+4. الأسرار (تُضاف يدوياً في **Service → Environment**):
 
 | المتغير | القيمة |
 |---|---|
-| `VITE_GAME_SERVER` | `https://<خدمتك>.koyeb.app` |
+| `BOT_TOKEN` | من BotFather |
+| `WEBHOOK_URL` | `https://<اسم-خدمتك>.onrender.com/webhook` |
+| `WEBHOOK_SECRET` | سلسلة عشوائية |
+| `DATABASE_URL` | كونكشن سترينغ TiDB (لو جهّزته) |
+
+5. **Deploy** → احفظ الرابط `https://<اسم-خدمتك>.onrender.com`.
+6. (اختياري) أضف مراقب **UptimeRobot** على `/health` لمنع النوم.
+
+## 2) الواجهة — Vercel (مجاني)
+
+1. **Import Git Repository** → المستودع (حساب GitHub نفسه).
+2. الإعدادات التلقائية تكفي (Vite — `vercel.json` مضبوط مسبقاً).
+3. متغيرا البيئة:
+
+| المتغير | القيمة |
+|---|---|
+| `VITE_GAME_SERVER` | `https://<اسم-خدمتك>.onrender.com` |
 | `VITE_BOT_USERNAME` | اسم البوت (بدون @) — يفعّل روابط الدعوة المباشرة |
 
 4. **Deploy** → احصل على رابط `https://<مشروعك>.vercel.app` وضعه في زر القائمة في BotFather.
@@ -49,7 +50,7 @@
 ## 3) التحقق بعد النشر
 
 ```bash
-GAME_SERVER=https://<خدمتك>.koyeb.app node server/deploy-smoke.mjs
+GAME_SERVER=https://<اسم-خدمتك>.onrender.com node server/deploy-smoke.mjs
 ```
 
 الناتج الصحيح: `✅ DEPLOY SMOKE PASSED` (فحص الصحة + CORS + مطابقة WebSocket + إشارات PeerJS). لو ظهر `401` على لوحة الصدارة فهذا **صحيح** ويعني أن تحقق هوية تيليجرام فعّال.
@@ -58,10 +59,12 @@ GAME_SERVER=https://<خدمتك>.koyeb.app node server/deploy-smoke.mjs
 
 ## 4) قاعدة TiDB (موصى بها — البقاء الدائم للحسابات)
 
+**ملاحظة:** قرص Render المجاني مؤقت (يُمسح عند إعادة النشر) — لذلك **TiDB هو مصدر الحقيقة** للحسابات، والـ JSONL مجرد احتياطي.
+
 **الخطوات (بلا مشاركة أي سر مع أحد):**
 1. أنشئ كلاستر **TiDB Serverless Starter** مجاني.
 2. افتح **SQL Editor** في متصفح TiDB Cloud والصق `server/schema.sql` ونفّذه (الجداول جاهزة).
-3. في Koyeb أضف متغير `DATABASE_URL` (الكونكشن سترينغ كامل من TiDB Cloud) — الخادم يتصل تلقائياً عند الإقلاع.
+3. في Render أضف متغير `DATABASE_URL` — الخادم يتصل تلقائياً عند الإقلاع.
 4. تحقّق من `/health` → يجب أن يظهر `"db": "tidb"`.
 5. لنقل دفتر قائم (اختياري): شغّل `npm run migrate` من أي جهاز فيه `DATABASE_URL` (أو اترك الخادم يعيد التعبئة تلقائياً عند أول إقلاع).
 
@@ -71,11 +74,11 @@ GAME_SERVER=https://<خدمتك>.koyeb.app node server/deploy-smoke.mjs
 
 ## 5) قائمة الانطلاق النهائية
 
-- [ ] `BOT_TOKEN` + `WEBHOOK_URL` + `WEBHOOK_SECRET` مضبوطة على Koyeb
+- [ ] `BOT_TOKEN` + `WEBHOOK_URL` + `WEBHOOK_SECRET` مضبوطة على Render
 - [ ] `VITE_GAME_SERVER` + `VITE_BOT_USERNAME` مضبوطان على Vercel وأعيد البناء
 - [ ] زر القائمة في BotFather يشير إلى رابط Vercel
 - [ ] الدفع بالنجوم مفعّل في BotFather
-- [ ] `schema.sql` منفّذ على TiDB + `DATABASE_URL` في Koyeb (يظهر `"db":"tidb"` في `/health`)
+- [ ] `schema.sql` منفّذ على TiDB + `DATABASE_URL` في Render (يظهر `"db":"tidb"` في `/health`)
 - [ ] `deploy-smoke` يعطي `PASSED`
 - [ ] اختبار هاتفين حقيقيين (مطابقة + غرفة خاصة + شراء نجوم)
 - [ ] سياسة خصوصية + شروط استخدام (يطلبها BotFather لبعض الميزات)
@@ -87,3 +90,13 @@ GAME_SERVER=https://<خدمتك>.koyeb.app node server/deploy-smoke.mjs
 - **لا تضع `BOT_TOKEN` في أي مستودع أو متغيّر واجهة** (`VITE_*` يُحزم في ملفات المتصفح).
 - الويب هوك محمي بـ `WEBHOOK_SECRET`، والدفتر محمي بتوقيع `initData` (HMAC مع `BOT_TOKEN`).
 - الإضافة الوحيدة للنجوم (المال) تأتي من ويب هوك الدفع — العميل لا يستطيع إضافة نجوم لنفسه.
+
+---
+
+## بديل: النشر على Koyeb (مجاني — إن كان التسجيل متاحاً)
+
+> Koyeb انتقلت لصفقة Mistral وتغيّرت طبقتها المجانية (بطاقة تحقق + إيقاف عند الخمول في بعض الحالات). Render هو المسار الموصى به حالياً، لكن إن كنت مسجّلاً بالفعل في Koyeb فالخطوات متطابقة مع تبويب Dockerfile:
+
+1. **Create Service** → **Dockerfile** → المجلد `server/` → المنفذ `8000`.
+2. المتغيرات نفسها أعلاه + `PORT=8000`.
+3. رابط الخدمة `https://xxx.koyeb.app` يُستخدم بدل `.onrender.com`.

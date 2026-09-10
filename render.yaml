@@ -1,0 +1,39 @@
+# ============================================================
+# Render Blueprint — one-click deploy of the Star Vault backend
+# ============================================================
+# Connect this repo in Render (New → Blueprint) and it deploys the
+# backend web service with everything preconfigured. Secret values
+# (sync: false) are set once in the Render dashboard and never leave it.
+#
+# The frontend is deployed separately on Vercel (VITE_GAME_SERVER must
+# point at this service's URL, e.g. https://star-vault-server.onrender.com).
+# ============================================================
+
+services:
+  - type: web
+    name: star-vault-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        value: "*"
+      - key: ALLOW_CLIENT_TOPUP
+        value: "0"
+      - key: LEDGER_FILE
+        value: data/ledger.jsonl
+      # Secrets — set in the Render dashboard (Service → Environment):
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
